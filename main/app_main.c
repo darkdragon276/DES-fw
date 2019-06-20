@@ -9,8 +9,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "tcpip_adapter.h"
-#include "esp_log.h"
+
 
 static const char *TAG = "VALVE_APP";
 
