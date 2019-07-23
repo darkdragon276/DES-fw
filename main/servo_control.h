@@ -11,16 +11,12 @@
 #include "soc/mcpwm_periph.h"
 
 #include "driver/gpio.h"
+#include "driver/timer.h"
 #include "driver/uart.h"
 
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_log.h"
-
-typedef enum {
-    SERVO_STT_STOP = 0,
-    SERVO_STT_RUN,
-} servo_stt_t;
 
 typedef enum {
     SERVO_RQST_STOP = 0,
@@ -31,11 +27,6 @@ extern uint32_t servo_time;
 
 void servo_init(void);
 
-void servo_run();
-void servo_step_cal(void);
-void servo_delay(void);
-
-servo_stt_t servo_get_stt(void);
 void servo_set_request(servo_rqst_t rqst);
 servo_rqst_t servo_get_request(void);
 // time to change currennt duty to destination duty
