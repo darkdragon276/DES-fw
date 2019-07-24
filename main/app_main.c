@@ -36,68 +36,36 @@ static const char *TAG = "ROBOT";
 
 #define BUF_SIZE (1024)
 
-// static void servo_run_task(void *pv)
-// {
-//     servo_init();
-//     while (1) {
-//         if (servo_get_stt() == SERVO_STT_RUN) {
-//             servo_run();
-//         } else {
-//             if (servo_get_request() == SERVO_RQST_RUN) {
-//                 servo_step_cal();
-//                 servo_run();
-//                 ESP_LOGI("SERVO TASK", "request run OK");
-//             }
-//         }
-//         servo_delay();
-//     }
-// }
-
-// static void uart_task(void *pv)
-// {
-//     uart_config_t uart_config = {.baud_rate = 115200,
-//                                  .data_bits = UART_DATA_8_BITS,
-//                                  .parity = UART_PARITY_DISABLE,
-//                                  .stop_bits = UART_STOP_BITS_1,
-//                                  .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-//     uart_param_config(UART_NUM_1, &uart_config);
-//     uart_set_pin(UART_NUM_1, UART_TXD_PINNUM, UART_RXD_PINNUM,
-//     UART_RTS_PINNUM,
-//                  UART_CTS_PINNUM);
-//     uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
-//     char *data = (char *)malloc(BUF_SIZE);
-//     static int servo_count = 0;
-//     static int servo_duty[6] = {0};
-//     while (1) {
-//         // Read data from the UART
-//         int len = uart_read_bytes(UART_NUM_1, (uint8_t *)data, BUF_SIZE,
-//                                   20 / portTICK_RATE_MS);
-//         // Write data back to the UART
-//         if (len != 0) {
-//             servo_duty[servo_count] = (uint32_t)atoi(data);
-
-//             if (servo_duty[servo_count] < 500) {
-//                 servo_duty[servo_count] = 500;
-//             } else if (servo_duty[servo_count] > 2500) {
-//                 servo_duty[servo_count] = 2500;
-//             }
-//             ESP_LOGI("UART_TAG", "duty ms add to servo[%d]: %d", servo_count,
-//                      servo_duty[servo_count]);
-//             servo_count++;
-//             if (servo_count == 6) {
-//                 flag = 1;
-//                 servo_count = 0;
-//             }
-//         }
-//         vTaskDelay(19 / portTICK_RATE_MS);
-//     }
-// }
-
-static void servo_run_task(void *arg)
+static void uart_task(void *pv)
 {
+    uart_config_t uart_config = {.baud_rate = 115200,
+                                 .data_bits = UART_DATA_8_BITS,
+                                 .parity = UART_PARITY_DISABLE,
+                                 .stop_bits = UART_STOP_BITS_1,
+                                 .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+    uart_param_config(UART_NUM_1, &uart_config);
+    uart_set_pin(UART_NUM_1, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM, UART_CTS_PINNUM);
+    uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
+    char *data = (char *)malloc(BUF_SIZE);
+    uint32_t duty = 0;
     while (1) {
-        ESP_LOGI("servo_run_task", "running");
-        vTaskDelay(1000 / portTICK_RATE_MS);
+        // Read data from the UART
+        int len = uart_read_bytes(UART_NUM_1, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS);
+        // Write data back to the UART
+        if (len != 0) {
+            duty = (uint32_t)atoi(data);
+
+            if (duty < 500) {
+                duty = 500;
+            } else if (duty > 2500) {
+                duty = 2500;
+            }
+
+            ESP_LOGI("UART_TAG", "duty ms add to servo %d", duty);
+            uart_write_bytes(UART_NUM_1, (const char *)data, len);
+            servo_set_duty(duty, 0);
+        }
+        vTaskDelay(19 / portTICK_RATE_MS);
     }
 }
 
@@ -112,7 +80,11 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    servo_init();
-    xTaskCreate(servo_run_task, "SERVO-CONTROL-TASK", 4096, NULL, 5, NULL);
-    // xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
+
+    servo_init(); // start timer and servo run task
+
+    debug_task();
+
+    ESP_LOGI(TAG, "uart_task starting ...");
+    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
 }
