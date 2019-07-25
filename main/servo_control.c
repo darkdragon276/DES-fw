@@ -618,6 +618,7 @@ esp_err_t robot_set_position(double x, double y)
         theta1 += (45 + atan2d(-2.9, 13.5)); // bu` goc 1
     else {
         ESP_LOGE(TAG, "theta1 out of range[-45 45]: %lf", theta1);
+        mutex_unlock(servo_handler.lock);
         return ESP_ERR_INVALID_ARG;
     }
     if (theta2 >= 0 && theta2 <= 90)
@@ -625,6 +626,7 @@ esp_err_t robot_set_position(double x, double y)
     else {
         // error
         ESP_LOGE(TAG, "theta2 out of range[0 90]: %lf", theta2);
+        mutex_unlock(servo_handler.lock);
         return ESP_ERR_INVALID_ARG;
     }
     if (theta3 >= -90 && theta3 <= 0)
@@ -632,6 +634,7 @@ esp_err_t robot_set_position(double x, double y)
     else {
         // error
         ESP_LOGE(TAG, "theta3 out of range[-90 0]: %lf", theta3);
+        mutex_unlock(servo_handler.lock);
         return ESP_ERR_INVALID_ARG;
     }
     if (theta4 >= -90 && theta4 <= 0)
@@ -639,6 +642,7 @@ esp_err_t robot_set_position(double x, double y)
     else {
         // error
         ESP_LOGE(TAG, "theta4 out of range[-90 0]: %lf", theta4);
+        mutex_unlock(servo_handler.lock);
         return ESP_ERR_INVALID_ARG;
     }
     theta5 = 45;
