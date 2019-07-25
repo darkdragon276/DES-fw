@@ -19,6 +19,13 @@
 // #define SERVO_PINNUM_6 (25)
 // #define SERVO_PINNUM_7 (33)
 
+#define SERVO_CHANNEL_0 (0)
+#define SERVO_CHANNEL_1 (1)
+#define SERVO_CHANNEL_2 (2)
+#define SERVO_CHANNEL_3 (3)
+#define SERVO_CHANNEL_4 (4)
+#define SERVO_CHANNEL_5 (5)
+
 #define SERVO_MAX_CHANNEL (6)
 #define SERVO_TIME_STEP (100) // 100 ms is timer isr step to caculate
 
@@ -37,7 +44,6 @@
 #define mutex_destroy(x) vQueueDelete(x)
 
 #define PI acos(-1)
-const double a = 1.0, d = 0.0, d1 = 8.7, a2 = 10.5, a3 = 10.0, d5 = 20.5;
 
 /*
  *
@@ -104,7 +110,7 @@ typedef struct {
  *
  */
 static xQueueHandle event_queue = NULL;
-static servo_t *servo_handler;
+static servo_t servo_handler = {0};
 /*
  *
  ****************FUNCTION DECLARE*******************
@@ -121,13 +127,17 @@ void IRAM_ATTR _timer_group0_isr(void *para);
 
 void _pwm_parameter_assign(servo_config_t *servo_config);
 void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config);
+
+void _servo_set_time(uint32_t time_fade);
+void _servo_set_duty(int duty, int channel);
+int Deg2Duty(double deg);
 /*
  *
  ****************FUNCTION ACCESS DATA*******************
  *
  */
 
-void servo_set_time(uint32_t time_fade)
+void _servo_set_time(uint32_t time_fade)
 {
     const char *TAG = "file: servo_control.c , function: servo_set_time";
     if (time_fade < 500) {
@@ -139,14 +149,14 @@ void servo_set_time(uint32_t time_fade)
         return;
     }
 
-    mutex_lock(servo_handler->lock);
-    servo_handler->time_fade = time_fade;
-    mutex_unlock(servo_handler->lock);
+    mutex_lock(servo_handler.lock);
+    servo_handler.time_fade = time_fade;
+    mutex_unlock(servo_handler.lock);
 
     ESP_LOGI(TAG, "servo set time: %d ms ", time_fade);
 }
 
-void servo_set_duty(int duty, int channel)
+void _servo_set_duty(int duty, int channel)
 {
     const char *TAG = "file: servo_control.c , function: servo_set_duty";
     if (duty < SERVO_MIN_PULSEWIDTH) {
@@ -162,10 +172,8 @@ void servo_set_duty(int duty, int channel)
         return;
     }
 
-    mutex_lock(servo_handler->lock);
-    servo_handler->channel[channel].duty_target = duty;
+    servo_handler.channel[channel].duty_target = duty;
     ESP_LOGI(TAG, "servo set duty: %d us ", duty);
-    mutex_unlock(servo_handler->lock);
 }
 
 // // void servo_set_all_duty_with_time(int *duty, uint32_t time)
@@ -433,41 +441,55 @@ void _servo_parameter_assign(servo_t *servo)
     servo->lock = mutex_create();
 }
 
+/*
+ *
+ ***************************************SERVO RUN TASK ******************************************
+ *
+ */
+
 static void _servo_run_task(void *arg)
 {
     const char *TAG = "file: servo_control.c , function: _servo_run_task";
-
-    servo_handler = (servo_t *)malloc(sizeof(servo_t));
-    _servo_parameter_assign(servo_handler);
 
     servo_config_t *servo_config = (servo_config_t *)malloc(6 * sizeof(servo_config_t));
     _pwm_parameter_assign(servo_config);
 
     ESP_LOGI(TAG, "servo_run_task starting ...");
     while (1) {
+
         event_handler_t event_handler = {0};
         if (xQueueReceive(event_queue, &event_handler, portMAX_DELAY)) {
             if (event_handler.event_type == EVENT_TIMER && event_handler.event_id == EVENT_ID_TIMER_SERVO) {
 
-                mutex_lock(servo_handler->lock);
+                mutex_lock(servo_handler.lock);
+
                 for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-                    _servo_channel_check_duty_error(&servo_handler->channel[i]);
+                    _servo_channel_check_duty_error(&servo_handler.channel[i]);
                 }
 
-                if (_servo_check_status(servo_handler) == SERVO_STATUS_IDLE) {
-                    _servo_step_cal(servo_handler);
+                if (_servo_check_status(&servo_handler) == SERVO_STATUS_IDLE) {
+                    _servo_step_cal(&servo_handler);
                 }
 
-                _servo_duty_add_step(servo_handler);
-                mutex_unlock(servo_handler->lock);
+                _servo_duty_add_step(&servo_handler);
+                // ESP_LOGI(TAG, "pwm out");
                 // export pwm
-                _servo_mcpwm_out(servo_handler, servo_config);
+                _servo_mcpwm_out(&servo_handler, servo_config);
                 ESP_LOGD(TAG, "pwm out");
+
+                mutex_unlock(servo_handler.lock);
             }
         }
-        vTaskDelay(1 / portTICK_RATE_MS);
+
+        vTaskDelay(10 / portTICK_RATE_MS);
     }
 }
+
+/*
+ *
+ ***************************************SERVO INIT ******************************************
+ *
+ */
 
 void servo_init(void)
 {
@@ -494,6 +516,8 @@ void servo_init(void)
     _timer_init(TIMER_AUTO_RELOAD, SERVO_TIME_STEP, TIMER_SCALE_MS);
 
     event_queue = xQueueCreate(20, sizeof(event_handler_t));
+
+    _servo_parameter_assign(&servo_handler);
 
     xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
 }
@@ -524,31 +548,24 @@ int Deg2Duty(double deg)
 /***********************   Kinetic Calculate funciton   *************************/
 // preprocess to put x y z position and theta3
 // function return pointer of xyzther3 array
-double *_position_calculate(double x, double y)
+esp_err_t robot_set_position(double x, double y)
 {
-    static double xyztheta3[4];
-    double r = sqrt(x * x + y * y), z = 1.0, theta3 = 45;
+    const char *TAG = "file: servo_control.c , function: robot_set_position";
+    mutex_lock(servo_handler.lock);
+    //******************reprocessing argument************************//
+    static double a = 1.0, d = 0.0, d1 = 8.7, a2 = 10.5, a3 = 10.0, d5 = 20.5;
+    double z = 1.0, theta3 = 45;
+    // double r = sqrt(x * x + y * y);
     // if( r <= 5)
     //   theta3 = 90;
     // else if( r < 40 )
     //   theta3 = floor( 90.0 - (r-5)*80.0/35.0 );
     // else
     // {
-
     // }
-    xyztheta3[0] = x;
-    xyztheta3[1] = y;
-    xyztheta3[2] = z;
-    xyztheta3[3] = theta3;
-    return xyztheta3;
-}
-// oriented kinetic set
-// function return T matrix : double T[3][4]
-double *_orient_kinetic(double *xyztheta3)
-{
-    static double T[3][4];
-    double x = *(xyztheta3 + 0), y = *(xyztheta3 + 1), z = *(xyztheta3 + 2), theta3 = *(xyztheta3 + 3);
-    /*phi caculate*/
+
+    //******************orient kinetic************************//
+
     double r = sqrt(x * x + y * y - d * d), phi = atan2d(y, x) + atan2d(d, r), s = d1 - z;
     r -= a;
     /*3 edge of triangle*/
@@ -558,109 +575,81 @@ double *_orient_kinetic(double *xyztheta3)
            sbeta2 = sqrt(1 - cbeta2 * cbeta2), beta2 = atan2d(sbeta2, cbeta2), beta = 90.0 + beta1 + beta2;
     /*assign T matrix*/
     double cp = cosd(phi), sp = sind(phi), cb = cosd(beta), sb = sind(beta);
-    T[1 - 1][1 - 1] = cb * cp;
-    T[2 - 1][1 - 1] = cb * sp;
-    T[3 - 1][1 - 1] = -sb;
 
-    T[1 - 1][2 - 1] = -sp;
-    T[2 - 1][2 - 1] = cp;
-    T[3 - 1][2 - 1] = 0;
+    /*
+    // T =  |cb * cp    -sp     sb * cp    x|
+    //      |cb * sp     cp     sb * sp    y|
+    //      |-sb         0      cb         z|
+    */
+    double nx = cb * cp, ny = cb * sp; //, nz = -sb;
+    double ox = -sp, oy = cp;          //, oz = 0;
+    double ax = sb * cp, ay = sb * sp, az = cb;
+    double dx = x, dy = y, dz = z;
 
-    T[1 - 1][3 - 1] = sb * cp;
-    T[2 - 1][3 - 1] = sb * sp;
-    T[3 - 1][3 - 1] = cb;
-
-    T[1 - 1][4 - 1] = x;
-    T[2 - 1][4 - 1] = y;
-    T[3 - 1][4 - 1] = z;
-    return &T[0][0];
-}
-// inverse kinetic function
-// function return array double theta[5]
-double *_inverse_kinetic(double *T)
-{
-    static double theta[5];
-
-    // T[row - 1][col - 1]
-    double nx = *(T + (1 - 1) * 4 + (1 - 1)), ny = *(T + (2 - 1) * 4 + (1 - 1)), nz = *(T + (3 - 1) * 4 + (1 - 1)),
-           ox = *(T + (1 - 1) * 4 + (2 - 1)), oy = *(T + (2 - 1) * 4 + (2 - 1)), oz = *(T + (3 - 1) * 4 + (2 - 1)),
-           ax = *(T + (1 - 1) * 4 + (3 - 1)), ay = *(T + (2 - 1) * 4 + (3 - 1)), az = *(T + (3 - 1) * 4 + (3 - 1)),
-           dx = *(T + (1 - 1) * 4 + (4 - 1)), dy = *(T + (2 - 1) * 4 + (4 - 1)), dz = *(T + (3 - 1) * 4 + (4 - 1));
-
+    // move cripper to d4
     dx -= d5 * ax;
     dy -= d5 * ay;
     dz -= d5 * az;
+
+    //******************inverse kinetic************************//
     /*theta1 */
-    double r = sqrt(dx * dx + dy * dy - d * d);
-    theta[1 - 1] = atan2d(dy, dx) + atan2d(d, r);
-    double s1 = sind(theta[1 - 1]), c1 = cosd(theta[1 - 1]);
+    // double r = sqrt(dx * dx + dy * dy - d * d);
+    double theta1 = atan2d(dy, dx) + atan2d(d, r);
+    double s1 = sind(theta1), c1 = cosd(theta1);
     /*theta3 and theta2*/
     r -= a;
-    double s = dz - d1, c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3), s3 = -sqrt(1 - c3 * c3);
+    s = dz - d1;
+    double c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3), s3 = -sqrt(1 - c3 * c3);
 
-    theta[3 - 1] = atan2d(s3, c3);
-    theta[2 - 1] = atan2d(s, r) - atan2d(a3 * s3, a2 + a3 * c3);
+    theta3 = atan2d(s3, c3);
+    double theta2 = atan2d(s, r) - atan2d(a3 * s3, a2 + a3 * c3);
     /*theta4*/
-    double theta23 = theta[2 - 1] + theta[3 - 1], c23 = cosd(theta23), s23 = sind(theta23),
+    double theta23 = theta2 + theta3, c23 = cosd(theta23), s23 = sind(theta23),
            s4 = az * s23 + ax * c23 * c1 + ay * c23 * s1, c4 = -(az * c23 - ax * s23 * c1 - ay * s23 * s1);
 
-    theta[4 - 1] = atan2d(s4, c4);
+    double theta4 = atan2d(s4, c4);
     /*theta5*/
     double s5 = nx * s1 - ny * c1, c5 = ox * s1 - oy * c1;
+    double theta5 = atan2d(s5, c5);
 
-    theta[5 - 1] = atan2d(s5, c5);
-    return theta;
-}
+    //******************conver to duty************************//
 
-// Process argument from kinetic calculate
-// function return pulse with value pwm[5]
-int *_theta2duty(double *theta)
-{
-    double *theta1 = theta + 1 - 1, *theta2 = theta + 2 - 1, *theta3 = theta + 3 - 1, *theta4 = theta + 4 - 1,
-           *theta5 = theta + 5 - 1;
-    if (*theta1 >= -45 && *theta1 <= 45)
-        *theta1 += (45 + atan2d(-2.9, 13.5)); // bu` goc 1
+    if (theta1 >= -45 && theta1 <= 45)
+        theta1 += (45 + atan2d(-2.9, 13.5)); // bu` goc 1
+    else {
+        ESP_LOGE(TAG, "theta1 out of range[-45 45]: %lf", theta1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (theta2 >= 0 && theta2 <= 90)
+        theta2 = 90 - theta2;
     else {
         // error
-        return 0;
+        ESP_LOGE(TAG, "theta2 out of range[0 90]: %lf", theta2);
+        return ESP_ERR_INVALID_ARG;
     }
-    if (*theta2 >= 0 && *theta2 <= 90)
-        *theta2 = 90 - *theta2;
+    if (theta3 >= -90 && theta3 <= 0)
+        theta3 = 90 + theta3 - 8;
     else {
         // error
-        return 0;
+        ESP_LOGE(TAG, "theta3 out of range[-90 0]: %lf", theta3);
+        return ESP_ERR_INVALID_ARG;
     }
-    if (*theta3 >= -90 && *theta3 <= 0)
-        *theta3 = 90 + *theta3 - 8;
+    if (theta4 >= -90 && theta4 <= 0)
+        theta4 = 90 + theta4 - 5;
     else {
         // error
-        return 0;
+        ESP_LOGE(TAG, "theta4 out of range[-90 0]: %lf", theta4);
+        return ESP_ERR_INVALID_ARG;
     }
-    if (*theta4 >= -90 && *theta4 <= 0)
-        *theta4 = 90 + *theta4 - 5;
-    else {
-        // error
-        return 0;
-    }
-    *theta5 = 45;
+    theta5 = 45;
 
     // memcpy(debug, theta, sizeof(double) * 5);
-    static int duty[5];
-    *(duty + 1 - 1) = Deg2Duty(*theta1);
-    *(duty + 2 - 1) = Deg2Duty(*theta2);
-    *(duty + 3 - 1) = Deg2Duty(*theta3);
-    *(duty + 4 - 1) = Deg2Duty(*theta4);
-    *(duty + 5 - 1) = Deg2Duty(*theta5);
-    return duty;
-}
-void servo_set_position(double x, double y)
-{
-    mutex_lock(servo_handler->lock);
-    double *xyztheta3 = _position_calculate(x, y);
-    double *T = _orient_kinetic(xyztheta3);
-    double *arg = _inverse_kinetic(T);
-    int *duty = _theta2duty(arg);
-
-    mutex_unlock(servo_handler->lock);
-    ESP_LOGI("debug", "duty 1 - 5: %d, %d, %d, %d, %d", duty[0], duty[1], duty[2], duty[3], duty[4]);
+    ESP_LOGI(TAG, "set duty of 5 channel in robot");
+    _servo_set_duty(Deg2Duty(theta1), SERVO_CHANNEL_0);
+    _servo_set_duty(Deg2Duty(theta2), SERVO_CHANNEL_1);
+    _servo_set_duty(Deg2Duty(theta3), SERVO_CHANNEL_2);
+    _servo_set_duty(Deg2Duty(theta4), SERVO_CHANNEL_3);
+    _servo_set_duty(Deg2Duty(theta5), SERVO_CHANNEL_4);
+    mutex_unlock(servo_handler.lock);
+    return ESP_OK;
 }

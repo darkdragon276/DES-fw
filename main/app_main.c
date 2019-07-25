@@ -63,7 +63,6 @@ static void uart_task(void *pv)
 
             ESP_LOGI("UART_TAG", "duty ms add to servo %d", duty);
             uart_write_bytes(UART_NUM_1, (const char *)data, len);
-            servo_set_duty(duty, 0);
         }
         vTaskDelay(19 / portTICK_RATE_MS);
     }
@@ -82,8 +81,6 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     servo_init(); // start timer and servo run task
-
-    debug_task();
 
     ESP_LOGI(TAG, "uart_task starting ...");
     xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
