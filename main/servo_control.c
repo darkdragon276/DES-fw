@@ -671,9 +671,10 @@ esp_err_t robot_set_position(double x, double y)
  * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
  */
 
-#define ROBOT_CRIPPER_MAX_WIDTH (5.5)
-#define ROBOT_CRIPPER_MIN_WIDTH (3.0)
+#define ROBOT_CRIPPER_MAX_WIDTH (6.0)
+#define ROBOT_CRIPPER_MIN_WIDTH (2.0)
 
+// error +-1cm , this function caculate base on reels data.
 int _width2duty(double width)
 {
     const char *TAG = "file: servo_control.c , function: _width2duty";
@@ -691,10 +692,14 @@ int _width2duty(double width)
     double a2 = -167, b2 = 2290;
     int duty = 0;
 
-    if (width >= ROBOT_CRIPPER_MIN_WIDTH && width <= 4.5) {
+    if (width < 3.0) {
+        duty = (int)1800;
+    } else if (width >= 3.0 && width <= 4.5) {
         duty = (int)(width * a1 + b1);
-    } else if (width > 4.5 && width <= ROBOT_CRIPPER_MAX_WIDTH) {
+    } else if (width > 4.5 && width <= 5.5) {
         duty = (int)(width * a2 + b2);
+    } else if (width > 5.5) {
+        duty = (int)1200;
     }
     return duty;
 }
@@ -707,8 +712,116 @@ esp_err_t robot_set_cripper_width(double width)
         ESP_LOGE(TAG, "Invalid argument");
         return ESP_ERR_INVALID_ARG;
     }
-    // mutex_lock(servo_handler.lock);
+    mutex_lock(servo_handler.lock);
     _servo_set_duty(duty, SERVO_CHANNEL_5);
-    // mutex_unlock(servo_handler.lock);
+    mutex_unlock(servo_handler.lock);
     return ESP_OK;
+}
+
+/*
+ *
+ **************** UART pack and unpack function *******************
+ *
+ */
+
+#define MSG_MIN_PKG_LEN (3)
+
+// this function pack your buffer to package lead by pkg pointer
+// this function can't check buffer_len vs sizeof(buff)
+int msg_pack(char *buff, int buff_len, char *package)
+{
+    const char *TAG = "file: servo_control.c , function: msg_pack";
+    if (buff == NULL) {
+        ESP_LOGE(TAG, "buff pointer is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (package == NULL) {
+        ESP_LOGE(TAG, "input package is null pointer");
+        return 0;
+    }
+
+    // mutex_lock(servo_handler.lock);
+    // caculate package length to return
+    int pkg_len = 0;
+    for (int i = 0; i < buff_len; i++) {
+        if (buff[i] == 0x7D || buff[i] == 0x7E || buff[i] == 0x7F) {
+            pkg_len++;
+        }
+    }
+    pkg_len += (buff_len + 2);
+    char *pkg = (char *)malloc(pkg_len * sizeof(char));
+
+    // packing
+    pkg_len = 0;
+    pkg[pkg_len++] = 0x7E;
+    for (int i = 0; i < buff_len; i++) {
+
+        if (buff[i] == 0x7D || buff[i] == 0x7E || buff[i] == 0x7F) {
+
+            pkg[pkg_len++] = 0x7D;
+            pkg[pkg_len++] = buff[i] ^ 0x20;
+
+        } else {
+            pkg[pkg_len++] = buff[i];
+        }
+    }
+    pkg[pkg_len++] = 0x7F;
+
+    memcpy(package, pkg, pkg_len);
+    free(pkg);
+    // mutex_unlock(servo_handler.lock);
+
+    return pkg_len;
+}
+
+// this function unpack your package to buffer lead by buff pointer
+// this function can't check pkg_len vs sizeof(pkg)
+int msg_unpack(char *pkg, int pkg_len, char *buffer)
+{
+    const char *TAG = "file: servo_control.c , function: msg_unpack";
+    // check lenght
+    if (pkg_len < MSG_MIN_PKG_LEN) {
+        ESP_LOGE(TAG, "package_len: %d < %d", pkg_len, MSG_MIN_PKG_LEN);
+        return 0;
+    }
+    if (buffer == NULL) {
+        ESP_LOGE(TAG, "input buffer is null pointer");
+        return 0;
+    }
+
+    // check begin , end character
+    if (pkg[0] != 0x7E || pkg[pkg_len - 1] != 0x7F) {
+        ESP_LOGE(TAG, "begin char: %X != 0x7E or end char: %X != 0x7F", pkg[0],
+                 pkg[pkg_len - 1]);
+        return 0;
+    }
+
+    // allocation buffer
+    // mutex_lock(servo_handler.lock);
+    int buff_len = pkg_len;
+    for (int i = 0; i < pkg_len; i++) {
+        if (pkg[i] == 0x7D || pkg[i] == 0x7E || pkg[i] == 0x7F) {
+            buff_len--;
+        }
+    }
+    char *buff = (char *)malloc(buff_len * sizeof(char));
+
+    // unpacking
+    buff_len = 0;
+    for (uint32_t i = 1; i < pkg_len - 1; i++) {
+        if (pkg[i] == 0x7E || pkg[i] == 0x7F) {
+            ESP_LOGE(TAG, "pkg[%d] = %X", i, pkg[i]);
+            return 0;
+        } else if (pkg[i] == 0x7D) {
+            buff[buff_len++] = pkg[++i] ^ 0x20;
+        } else {
+            buff[buff_len++] = pkg[i];
+        }
+    }
+
+    memcpy(buffer, buff, buff_len);
+    free(buff);
+    // mutex_lock(servo_handler.unlock);
+
+    return buff_len;
 }

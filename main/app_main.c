@@ -58,11 +58,11 @@ static void uart_task(void *pv)
         if (len != 0) {
             duty = (double)atof(data);
 
-            if (duty < 3.0) {
-                duty = 3.0;
-            } else if (duty > 5.5) {
-                duty = 5.5;
-            }
+            // if (duty < 3.0) {
+            //     duty = 3.0;
+            // } else if (duty > 5.5) {
+            //     duty = 5.5;
+            // }
             robot_set_cripper_width(duty);
             ESP_LOGI("UART_TAG", "duty ms add to servo %.1lf", duty);
             uart_write_bytes(UART_NUM_0, (const char *)data, len);
@@ -83,8 +83,22 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    servo_init();     // start timer and servo run task
+    char data[4] = {0x30, 0x40, 0x7D, 0x7F};
 
+    char *package = (char *)malloc(2 * sizeof(char));
+    int pkg_len = msg_pack(data, 4, package);
+    for (int i = 0; i < pkg_len; i++) {
+        ESP_LOGI("debug", "pkg[%d]: %X ", i, package[i]);
+    }
+
+    char *buff = (char *)malloc(2 * sizeof(char));
+    int buff_len = msg_unpack(package, pkg_len, buff);
+    for (int i = 0; i < buff_len; i++) {
+        ESP_LOGI("debug", "buff[%d]: %X ", i, buff[i]);
+    }
+
+    servo_init();     // start timer and servo run task
     ESP_LOGI(TAG, "uart_task starting ...");
+
     xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
 }

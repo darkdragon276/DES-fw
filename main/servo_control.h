@@ -34,3 +34,6 @@ void servo_set_all_duty_with_time(int *duty, uint32_t time);
 
 esp_err_t robot_set_position(double x, double y);
 esp_err_t robot_set_cripper_width(double width);
+
+int msg_unpack(char *pkg, int pkg_len, char *buffer);
+int msg_pack(char *buff, int buff_len, char *package);
