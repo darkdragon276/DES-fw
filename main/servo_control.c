@@ -124,7 +124,7 @@ void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
 void _servo_set_duty(int duty, int channel);
-int Deg2Duty(double deg);
+int _degree2duty(double deg);
 /*
  *
  ****************FUNCTION ACCESS DATA*******************
@@ -540,7 +540,7 @@ double sind(double x) { return sin(x * PI / 180.0); }
 
 // convert deg to pulse with value
 // [0:90] degree => [1000:2000] us
-int Deg2Duty(double deg)
+int _degree2duty(double deg)
 {
     double temp;
     temp = deg / 90;
@@ -658,11 +658,11 @@ esp_err_t robot_set_position(double x, double y)
 
     // memcpy(debug, theta, sizeof(double) * 5);
     ESP_LOGI(TAG, "set duty of 5 channel in robot");
-    _servo_set_duty(Deg2Duty(theta1), SERVO_CHANNEL_0);
-    _servo_set_duty(Deg2Duty(theta2), SERVO_CHANNEL_1);
-    _servo_set_duty(Deg2Duty(theta3), SERVO_CHANNEL_2);
-    _servo_set_duty(Deg2Duty(theta4), SERVO_CHANNEL_3);
-    _servo_set_duty(Deg2Duty(theta5), SERVO_CHANNEL_4);
+    _servo_set_duty(_degree2duty(theta1), SERVO_CHANNEL_0);
+    _servo_set_duty(_degree2duty(theta2), SERVO_CHANNEL_1);
+    _servo_set_duty(_degree2duty(theta3), SERVO_CHANNEL_2);
+    _servo_set_duty(_degree2duty(theta4), SERVO_CHANNEL_3);
+    _servo_set_duty(_degree2duty(theta5), SERVO_CHANNEL_4);
     mutex_unlock(servo_handler.lock);
     return ESP_OK;
 }
@@ -673,20 +673,43 @@ esp_err_t robot_set_position(double x, double y)
  * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
  */
 
-#define ROBOT_CRIPPER_MAX_WIDTH (6.0)
-#define ROBOT_CRIPPER_MIN_WIDTH (1.0)
+#define ROBOT_CRIPPER_MAX_WIDTH (5.5)
+#define ROBOT_CRIPPER_MIN_WIDTH (3.0)
 
-void robot_set_cripper_width(double width)
+int _width2duty(double width)
 {
-    // const char *TAG = "file: servo_control.c , function: robot_set_cripper_width";
-    // if( width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH )
-    // {
-    //     ESP_LOGE(TAG, "width is: %lf out of range [1:6]", width);
-    //     return;
-    // }
+    const char *TAG = "file: servo_control.c , function: _width2duty";
+    if (width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH) {
+        ESP_LOGE(TAG, "width is: %lf out of range [%lf:%lf]", width,
+                 ROBOT_CRIPPER_MIN_WIDTH, ROBOT_CRIPPER_MAX_WIDTH);
+        return 0;
+    }
 
-    // int duty = 0;
+    // parameter is caculated based y = ax + b;
+    // link google sheets:
+    // https://docs.google.com/spreadsheets/d/11esbf92rwcrUhVwUt
+    // Z1Ag2tBRmxVL04o7HjGpEqcSPc/edit#gid=0
+    double a1 = -100, b1 = 2010;
+    double a2 = -167, b2 = 2290;
+    int duty = 0;
+
+    if (width >= ROBOT_CRIPPER_MIN_WIDTH && width <= 4, 5) {
+        duty = (int)(width * a1 + b1);
+    } else if (width > 4, 5 && width <= ROBOT_CRIPPER_MAX_WIDTH) {
+        duty = (int)(width * a2 + b2);
+    }
+    return duty;
+}
+
+esp_err_t robot_set_cripper_width(double width)
+{
+    const char *TAG = "file: servo_control.c , function: robot_set_cripper_width";
+    int duty = _width2duty(width);
+    if (duty = 0) {
+        ESP_LOGE(TAG, "duty is zero: %d", duty);
+        return  ;
+    }
     mutex_lock(servo_handler.lock);
-    _servo_set_duty(width, SERVO_CHANNEL_5);
+    _servo_set_duty(duty, SERVO_CHANNEL_5);
     mutex_unlock(servo_handler.lock);
 }
