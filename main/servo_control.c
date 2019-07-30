@@ -1,13 +1,7 @@
 #include "servo_control.h"
 
-/****** CRIPPER WIDE WITH PULSE ******
- * PULSE (us)    1900    1800    1700    1600    1500    1400    1300    1200    1100
- *------------------------------------------------------------------------------------
- * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
- */
-
-#define SERVO_MIN_PULSEWIDTH (500)  // Minimum pulse width in us
-#define SERVO_MAX_PULSEWIDTH (2500) // Maximum pulse width in us
+#define SERVO_MIN_PULSEWIDTH (500)      // Minimum pulse width in us
+#define SERVO_MAX_PULSEWIDTH (2500)     // Maximum pulse width in us
 #define SERVO_MAX_DEGREE (90)
 
 #define SERVO_PINNUM_0 (15)
@@ -15,9 +9,9 @@
 #define SERVO_PINNUM_2 (12)
 #define SERVO_PINNUM_3 (14)
 #define SERVO_PINNUM_4 (27)
-#define SERVO_PINNUM_5 (26)
+// #define SERVO_PINNUM_5 (26)
 // #define SERVO_PINNUM_6 (25)
-// #define SERVO_PINNUM_7 (33)
+#define SERVO_PINNUM_5 (33)
 
 #define SERVO_CHANNEL_0 (0)
 #define SERVO_CHANNEL_1 (1)
@@ -27,7 +21,7 @@
 #define SERVO_CHANNEL_5 (5)
 
 #define SERVO_MAX_CHANNEL (6)
-#define SERVO_TIME_STEP (100) // 100 ms is timer isr step to caculate
+#define SERVO_TIME_STEP (100)     // 100 ms is timer isr step to caculate
 
 #define TIMER_DIVIDER (80)
 #define TIMER_SCALE_SEC (1000000U)
@@ -88,8 +82,8 @@ typedef struct {
 } event_handler_t;
 
 typedef struct {
-    int duty_current; // duty current
-    int duty_target;  // duty target
+    int duty_current;     // duty current
+    int duty_target;      // duty target
     int step;
 
     servo_status_t status;
@@ -98,7 +92,7 @@ typedef struct {
 typedef struct {
     servo_channel_ctrl_t channel[6];
 
-    uint32_t time_fade; // time_step to caculate
+    uint32_t time_fade;     // time_step to caculate
 
     servo_rqst_t user_request;
     servo_status_t status;
@@ -156,6 +150,7 @@ void _servo_set_time(uint32_t time_fade)
     ESP_LOGI(TAG, "servo set time: %d ms ", time_fade);
 }
 
+// function set duty for a channel with non-locking
 void _servo_set_duty(int duty, int channel)
 {
     const char *TAG = "file: servo_control.c , function: servo_set_duty";
@@ -234,7 +229,8 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
                  (int)servo_channel->duty_current, (int)servo_channel->duty_target);
         return SERVO_STATUS_ERROR;
     }
-    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) ||
+    if (abs(servo_channel->duty_current - servo_channel->duty_target) <=
+            abs(servo_channel->step) ||
         servo_channel->step == 0) {
         servo_channel->status = SERVO_STATUS_IDLE;
         return SERVO_STATUS_IDLE;
@@ -247,7 +243,8 @@ servo_status_t _servo_check_status(servo_t *servo)
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_IDLE) {
             continue;
-        } else if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_RUNNING) {
+        } else if (_servo_channel_check_status(&servo->channel[i]) ==
+                   SERVO_STATUS_RUNNING) {
             servo->status = SERVO_STATUS_RUNNING;
             return SERVO_STATUS_RUNNING;
         } else {
@@ -310,7 +307,8 @@ void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config)
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         _servo_channel_check_duty_error(&servo->channel[i]);
         ESP_ERROR_CHECK(mcpwm_set_duty_in_us(servo_config[i].unit, servo_config[i].timer,
-                                             servo_config[i].op, servo->channel[i].duty_current));
+                                             servo_config[i].op,
+                                             servo->channel[i].duty_current));
     }
 }
 
@@ -369,8 +367,8 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
     timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, timer_interval * TIMER_SCALE);
 
     timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr, (void *)TIMER_0,
-                                       ESP_INTR_FLAG_IRAM, NULL));
+    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr,
+                                       (void *)TIMER_0, ESP_INTR_FLAG_IRAM, NULL));
 
     ESP_ERROR_CHECK(timer_start(TIMER_GROUP_0, TIMER_0));
     ESP_LOGI(TAG, "timer isr init %d ms: OK", (int)timer_interval);
@@ -438,14 +436,15 @@ void _servo_parameter_assign(servo_t *servo)
         servo->channel[i].step = 0;
     }
     servo->status = SERVO_STATUS_IDLE;
-    servo->time_fade = 1000; // 1000 ms
+    servo->time_fade = 1000;     // 1000 ms
     servo->user_request = 0;
     servo->lock = mutex_create();
 }
 
 /*
  *
- ***************************************SERVO RUN TASK ******************************************
+ ***************************************SERVO RUN TASK
+ **************************************
  *
  */
 
@@ -490,7 +489,8 @@ static void _servo_run_task(void *arg)
 
 /*
  *
- ***************************************SERVO INIT ******************************************
+ ***************************************SERVO INIT
+ *******************************************
  *
  */
 
@@ -502,17 +502,18 @@ void servo_init(void)
     // timer 0,  2 channel
 
     mcpwm_config_t pwm_config;
-    pwm_config.frequency = 50; // frequency = 50Hz, i.e. for every servo
+    pwm_config.frequency = 50;     // frequency = 50Hz, i.e. for every servo
     // time period should be 20ms
-    pwm_config.cmpr_a = 0; // duty cycle of PWMxA = 0
-    pwm_config.cmpr_b = 0; // duty cycle of PWMxb = 0
+    pwm_config.cmpr_a = 0;     // duty cycle of PWMxA = 0
+    pwm_config.cmpr_b = 0;     // duty cycle of PWMxb = 0
     pwm_config.counter_mode = MCPWM_UP_COUNTER;
     pwm_config.duty_mode = MCPWM_DUTY_MODE_0;
 
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         ESP_ERROR_CHECK(mcpwm_gpio_init(servo_config[i].unit, servo_config[i].io_signal,
                                         servo_config[i].pinnum));
-        ESP_ERROR_CHECK(mcpwm_init(servo_config[i].unit, servo_config[i].timer, &pwm_config));
+        ESP_ERROR_CHECK(
+            mcpwm_init(servo_config[i].unit, servo_config[i].timer, &pwm_config));
     }
     free(servo_config);
     ESP_LOGI(TAG, "servo 6 channels config:  OK");
@@ -587,8 +588,8 @@ esp_err_t robot_set_position(double x, double y)
     //      |cb * sp     cp     sb * sp    y|
     //      |-sb         0      cb         z|
     */
-    double nx = cb * cp, ny = cb * sp; //, nz = -sb;
-    double ox = -sp, oy = cp;          //, oz = 0;
+    double nx = cb * cp, ny = cb * sp;     //, nz = -sb;
+    double ox = -sp, oy = cp;              //, oz = 0;
     double ax = sb * cp, ay = sb * sp, az = cb;
     double dx = x, dy = y, dz = z;
 
@@ -605,7 +606,8 @@ esp_err_t robot_set_position(double x, double y)
     /*theta3 and theta2*/
     r -= a;
     s = dz - d1;
-    double c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3), s3 = -sqrt(1 - c3 * c3);
+    double c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3),
+           s3 = -sqrt(1 - c3 * c3);
 
     theta3 = atan2d(s3, c3);
     double theta2 = atan2d(s, r) - atan2d(a3 * s3, a2 + a3 * c3);
@@ -622,7 +624,7 @@ esp_err_t robot_set_position(double x, double y)
     //******************conver to duty************************//
 
     if (theta1 >= -45 && theta1 <= 45)
-        theta1 += (45 + atan2d(-2.9, 13.5)); // bu` goc 1
+        theta1 += (45 + atan2d(-2.9, 13.5));     // bu` goc 1
     else {
         ESP_LOGE(TAG, "theta1 out of range[-45 45]: %lf", theta1);
         mutex_unlock(servo_handler.lock);
@@ -663,4 +665,28 @@ esp_err_t robot_set_position(double x, double y)
     _servo_set_duty(Deg2Duty(theta5), SERVO_CHANNEL_4);
     mutex_unlock(servo_handler.lock);
     return ESP_OK;
+}
+
+/****** CRIPPER WIDE WITH PULSE ******
+ * PULSE (us)    1900    1800    1700    1600    1500    1400    1300    1200    1100
+ *------------------------------------------------------------------------------------
+ * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
+ */
+
+#define ROBOT_CRIPPER_MAX_WIDTH (6.0)
+#define ROBOT_CRIPPER_MIN_WIDTH (1.0)
+
+void robot_set_cripper_width(double width)
+{
+    // const char *TAG = "file: servo_control.c , function: robot_set_cripper_width";
+    // if( width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH )
+    // {
+    //     ESP_LOGE(TAG, "width is: %lf out of range [1:6]", width);
+    //     return;
+    // }
+
+    // int duty = 0;
+    mutex_lock(servo_handler.lock);
+    _servo_set_duty(width, SERVO_CHANNEL_5);
+    mutex_unlock(servo_handler.lock);
 }

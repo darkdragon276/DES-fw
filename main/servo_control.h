@@ -33,3 +33,4 @@ void servo_init(void);
 void servo_set_all_duty_with_time(int *duty, uint32_t time);
 
 esp_err_t robot_set_position(double x, double y);
+void robot_set_cripper_width(double width);
