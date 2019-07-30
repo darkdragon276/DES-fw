@@ -423,7 +423,7 @@ void _pwm_parameter_assign(servo_config_t *servo_config)
     servo_config[5].io_signal = MCPWM2B;
     servo_config[5].op = MCPWM_OPR_B;
     servo_config[5].pinnum = SERVO_PINNUM_5;
-    ESP_LOGI(TAG, "servo 6 channels is assigned:  OK");
+    ESP_LOGI(TAG, "servo's 6 channels are assigned:  OK");
 }
 
 void _servo_parameter_assign(servo_t *servo)
@@ -443,8 +443,7 @@ void _servo_parameter_assign(servo_t *servo)
 
 /*
  *
- ***************************************SERVO RUN TASK
- **************************************
+ *********************************SERVO RUN TASK************************************
  *
  */
 
@@ -489,8 +488,7 @@ static void _servo_run_task(void *arg)
 
 /*
  *
- ***************************************SERVO INIT
- *******************************************
+ *********************************SERVO INIT**********************************
  *
  */
 
@@ -680,7 +678,7 @@ int _width2duty(double width)
 {
     const char *TAG = "file: servo_control.c , function: _width2duty";
     if (width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH) {
-        ESP_LOGE(TAG, "width is: %lf out of range [%lf:%lf]", width,
+        ESP_LOGE(TAG, "width is: %.1lf out of range [%.1lf:%.1lf]", width,
                  ROBOT_CRIPPER_MIN_WIDTH, ROBOT_CRIPPER_MAX_WIDTH);
         return 0;
     }
@@ -693,9 +691,9 @@ int _width2duty(double width)
     double a2 = -167, b2 = 2290;
     int duty = 0;
 
-    if (width >= ROBOT_CRIPPER_MIN_WIDTH && width <= 4, 5) {
+    if (width >= ROBOT_CRIPPER_MIN_WIDTH && width <= 4.5) {
         duty = (int)(width * a1 + b1);
-    } else if (width > 4, 5 && width <= ROBOT_CRIPPER_MAX_WIDTH) {
+    } else if (width > 4.5 && width <= ROBOT_CRIPPER_MAX_WIDTH) {
         duty = (int)(width * a2 + b2);
     }
     return duty;
@@ -705,11 +703,12 @@ esp_err_t robot_set_cripper_width(double width)
 {
     const char *TAG = "file: servo_control.c , function: robot_set_cripper_width";
     int duty = _width2duty(width);
-    if (duty = 0) {
-        ESP_LOGE(TAG, "duty is zero: %d", duty);
-        return  ;
+    if (duty == 0) {
+        ESP_LOGE(TAG, "Invalid argument");
+        return ESP_ERR_INVALID_ARG;
     }
-    mutex_lock(servo_handler.lock);
+    // mutex_lock(servo_handler.lock);
     _servo_set_duty(duty, SERVO_CHANNEL_5);
-    mutex_unlock(servo_handler.lock);
+    // mutex_unlock(servo_handler.lock);
+    return ESP_OK;
 }

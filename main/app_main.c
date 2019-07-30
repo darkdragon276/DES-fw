@@ -4,7 +4,7 @@
  *
  *              ./LICENSE
  */
-#include "gfx.h"
+// #include "gfx.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -49,22 +49,22 @@ static void uart_task(void *pv)
                  UART_CTS_PINNUM);
     uart_driver_install(UART_NUM_0, BUF_SIZE * 2, 0, 0, NULL, 0);
     char *data = (char *)malloc(BUF_SIZE);
-    uint32_t duty = 0;
+    double duty = 0;
     while (1) {
         // Read data from the UART
         int len =
             uart_read_bytes(UART_NUM_0, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS);
         // Write data back to the UART
         if (len != 0) {
-            duty = (uint32_t)atoi(data);
+            duty = (double)atof(data);
 
-            if (duty < 500) {
-                duty = 500;
-            } else if (duty > 2500) {
-                duty = 2500;
+            if (duty < 3.0) {
+                duty = 3.0;
+            } else if (duty > 5.5) {
+                duty = 5.5;
             }
             robot_set_cripper_width(duty);
-            ESP_LOGI("UART_TAG", "duty ms add to servo %d", duty);
+            ESP_LOGI("UART_TAG", "duty ms add to servo %.1lf", duty);
             uart_write_bytes(UART_NUM_0, (const char *)data, len);
         }
         vTaskDelay(19 / portTICK_RATE_MS);
