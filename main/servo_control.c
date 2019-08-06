@@ -124,7 +124,16 @@ void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
 void _servo_set_duty(int duty, int channel);
+
+// math function
+double atan2d(double y, double x) { return atan2(y, x) * 180.0 / PI; }
+double cosd(double x) { return cos(x * PI / 180.0); }
+double sind(double x) { return sin(x * PI / 180.0); }
+double acosd(double x) { return acos(x) * 180.0 / PI; }
 int _degree2duty(double deg);
+bool _is_in_circle(double x, double y, double x0, double y0, double R0);
+bool _is_in_workspace_3link_robot(double d, double z, double theta, double r1, double r2,
+                                  double r3);
 /*
  *
  ****************FUNCTION ACCESS DATA*******************
@@ -171,21 +180,6 @@ void _servo_set_duty(int duty, int channel)
     ESP_LOGI(TAG, "servo set duty: %d us ", duty);
 }
 
-// // void servo_set_all_duty_with_time(int *duty, uint32_t time)
-// // {
-// //     const char *TAG = "servo_set_all_duty_with_time";
-// //     if (sizeof(duty) < SERVO_MAX_CHANNEL * sizeof(int)) {
-// //         ESP_LOGE(TAG, "duty input is shortest: %d", sizeof(duty));
-// //         return;
-// //     }
-
-// //     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-// //         servo_set_duty(duty[i], servo_ch[i]);
-// //     }
-
-// //     servo_set_time(time);
-// // }
-
 // void servo_set_request(servo_rqst_t rqst)
 // {
 //     const char *TAG = "servo_set_request";
@@ -212,8 +206,6 @@ void _servo_set_duty(int duty, int channel)
 //     }
 //     return SERVO_STT_RUN;
 // }
-
-// void _servo_set_run() { servo_stt_all = SERVO_ALL_RUNNING; }
 
 /*
  *
@@ -428,10 +420,11 @@ void _pwm_parameter_assign(servo_config_t *servo_config)
 
 void _servo_parameter_assign(servo_t *servo)
 {
+    int home[6] = {1500, 1000, 2000, 2000, 1500, 1500};
     memset(servo, 0, sizeof(servo_t));
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-        servo->channel[i].duty_current = 1500;
-        servo->channel[i].duty_target = 1500;
+        servo->channel[i].duty_current = home[i];
+        servo->channel[i].duty_target = home[i];
         servo->channel[i].status = SERVO_STATUS_IDLE;
         servo->channel[i].step = 0;
     }
@@ -487,10 +480,8 @@ static void _servo_run_task(void *arg)
 }
 
 /*
- *
- *********************************SERVO INIT**********************************
- *
- */
+*********************************SERVO INIT**********************************
+*/
 
 void servo_init(void)
 {
@@ -517,24 +508,16 @@ void servo_init(void)
     ESP_LOGI(TAG, "servo 6 channels config:  OK");
 
     _timer_init(TIMER_AUTO_RELOAD, SERVO_TIME_STEP, TIMER_SCALE_MS);
-
     event_queue = xQueueCreate(20, sizeof(event_handler_t));
-
     _servo_parameter_assign(&servo_handler);
-
     xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
 }
 
 /*
  *
- ****************MATH FUNCTION *******************
+ ******************************* MATH FUNCTION ************************
  *
  */
-double atan2d(double y, double x) { return atan2(y, x) * 180.0 / PI; }
-
-double cosd(double x) { return cos(x * PI / 180.0); }
-
-double sind(double x) { return sin(x * PI / 180.0); }
 
 // convert deg to pulse with value
 // [0:90] degree => [1000:2000] us
@@ -546,122 +529,187 @@ int _degree2duty(double deg)
     temp *= 1000;
     return (int)temp;
 }
+// check point(x, y) is in circle(x0, y0, RO) ?
+bool _is_in_circle(double x, double y, double x0, double y0, double R0)
+{
+    if (((x - x0) * (x - x0) + (y - y0) * (y - y0)) <= R0 * R0) {
+        return true;
+    }
+    return false;
+}
+// check point(d, z) is in workspace of 3link planar robot
+// have first argument is theta, distance between link is r1, r2, r3
+bool _is_in_workspace_3link_robot(double d, double z, double theta, double r1, double r2,
+                                  double r3)
+{
+    // first circle , in the top. point in workspace is out of this circles
+    double dtemp = (r1 + r2) * cosd(theta);
+    double ztemp = (r1 + r2) * sind(theta);
+    double Rtemp = r3;
+    // = false if point is in workspace
+    bool check1 = _is_in_circle(d, z, dtemp, ztemp, Rtemp);
+
+    // second circle , in the bottom. point in workspace is in of this circles
+    dtemp = r1 * cosd(theta) + r2 * sind(theta);
+    ztemp = r1 * sind(theta) - r2 * cosd(theta);
+    Rtemp = r3;
+    // = true if point is in workspace
+    bool check2 = _is_in_circle(d, z, dtemp, ztemp, Rtemp);
+
+    // third circle , in the right. point in workspace is in of this circles
+    dtemp = r1 * cosd(theta);
+    ztemp = r1 * sind(theta);
+    Rtemp = sqrt(r2 * r2 + r3 * r3 - 2 * r2 * r3 * cosd(135));
+    // = true if point is in workspace
+    bool check3 = _is_in_circle(d, z, dtemp, ztemp, Rtemp);
+
+    // first circle , in the left. point in workspace is out of this circles
+    dtemp = r1 * cosd(theta);
+    ztemp = r1 * sind(theta);
+    Rtemp = sqrt(r2 * r2 + r3 * r3 - 2 * r2 * r3 * cosd(45));
+    // = false if point is in workspace
+    bool check4 = _is_in_circle(d, z, dtemp, ztemp, Rtemp);
+
+    if (~check1 & check2 & check3 & ~check4) {
+        return true;
+    }
+    return false;
+}
 
 /********************************************************************************/
 /***********************   Kinetic Calculate funciton   *************************/
-// preprocess to put x y z position and theta3
+// preprocess to put x y z position
 // function return pointer of xyzther3 array
-esp_err_t robot_set_position(double x, double y)
+esp_err_t robot_set_position(double x, double y, double z)
 {
     const char *TAG = "file: servo_control.c , function: robot_set_position";
-    mutex_lock(servo_handler.lock);
-    //******************reprocessing argument************************//
-    static double a = 1.0, d = 0.0, d1 = 8.7, a2 = 10.5, a3 = 10.0, d5 = 20.5;
-    double z = 1.0, theta3 = 45;
-    // double r = sqrt(x * x + y * y);
-    // if( r <= 5)
-    //   theta3 = 90;
-    // else if( r < 40 )
-    //   theta3 = floor( 90.0 - (r-5)*80.0/35.0 );
-    // else
-    // {
+    // mutex_lock(servo_handler.lock);
+    // //******************reprocessing argument************************//
+    // static double a = 1.0, d = 0.0, d1 = 8.7, a2 = 10.5, a3 = 10.0, d5 = 20.5;
+
+    // //******************orient kinetic************************//
+
+    // double r = sqrt(x * x + y * y - d * d), phi = atan2d(y, x) + atan2d(d, r), s = d1 -
+    // z; r -= a;
+    // /*3 edge of triangle*/
+    // double m1 = sqrt(a2 * a2 + a3 * a3 + 2 * a2 * a3 * cosd(theta3)), m2 = d5,
+    //        m3 = sqrt(r * r + s * s);
+    // /*sum of theta2 + theta3 + theta4*/
+    // double beta1 = atan2d(s, r), cbeta2 = -(m1 * m1 - m2 * m2 - m3 * m3) / (2 * m2 *
+    // m3),
+    //        sbeta2 = sqrt(1 - cbeta2 * cbeta2), beta2 = atan2d(sbeta2, cbeta2),
+    //        beta = 90.0 + beta1 + beta2;
+    // /*assign T matrix*/
+    // double cp = cosd(phi), sp = sind(phi), cb = cosd(beta), sb = sind(beta);
+
+    // /*
+    // // T =  |cb * cp    -sp     sb * cp    x|
+    // //      |cb * sp     cp     sb * sp    y|
+    // //      |-sb         0      cb         z|
+    // */
+    // double nx = cb * cp, ny = cb * sp;     //, nz = -sb;
+    // double ox = -sp, oy = cp;              //, oz = 0;
+    // double ax = sb * cp, ay = sb * sp, az = cb;
+    // double dx = x, dy = y, dz = z;
+
+    // // move cripper to d4
+    // dx -= d5 * ax;
+    // dy -= d5 * ay;
+    // dz -= d5 * az;
+
+    // //******************inverse kinetic************************//
+    // /*theta1 */
+    // // double r = sqrt(dx * dx + dy * dy - d * d);
+    // double theta1 = atan2d(dy, dx) + atan2d(d, r);
+    // double s1 = sind(theta1), c1 = cosd(theta1);
+    // /*theta3 and theta2*/
+    // r -= a;
+    // s = dz - d1;
+    // double c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3),
+    //        s3 = -sqrt(1 - c3 * c3);
+
+    // theta3 = atan2d(s3, c3);
+    // double theta2 = atan2d(s, r) - atan2d(a3 * s3, a2 + a3 * c3);
+    // /*theta4*/
+    // double theta23 = theta2 + theta3, c23 = cosd(theta23), s23 = sind(theta23),
+    //        s4 = az * s23 + ax * c23 * c1 + ay * c23 * s1,
+    //        c4 = -(az * c23 - ax * s23 * c1 - ay * s23 * s1);
+
+    // double theta4 = atan2d(s4, c4);
+    // /*theta5*/
+    // double s5 = nx * s1 - ny * c1, c5 = ox * s1 - oy * c1;
+    // double theta5 = atan2d(s5, c5);
+
+    // //******************conver to duty************************//
+
+    // if (theta1 >= -45 && theta1 <= 45)
+    //     theta1 += (45 + atan2d(-2.9, 13.5));     // bu` goc 1
+    // else {
+    //     ESP_LOGE(TAG, "theta1 out of range[-45 45]: %lf", theta1);
+    //     mutex_unlock(servo_handler.lock);
+    //     return ESP_ERR_INVALID_ARG;
     // }
+    // if (theta2 >= 0 && theta2 <= 90)
+    //     theta2 = 90 - theta2;
+    // else {
+    //     // error
+    //     ESP_LOGE(TAG, "theta2 out of range[0 90]: %lf", theta2);
+    //     mutex_unlock(servo_handler.lock);
+    //     return ESP_ERR_INVALID_ARG;
+    // }
+    // if (theta3 >= -90 && theta3 <= 0)
+    //     theta3 = 90 + theta3 - 8;
+    // else {
+    //     // error
+    //     ESP_LOGE(TAG, "theta3 out of range[-90 0]: %lf", theta3);
+    //     mutex_unlock(servo_handler.lock);
+    //     return ESP_ERR_INVALID_ARG;
+    // }
+    // if (theta4 >= -90 && theta4 <= 0)
+    //     theta4 = 90 + theta4 - 5;
+    // else {
+    //     // error
+    //     ESP_LOGE(TAG, "theta4 out of range[-90 0]: %lf", theta4);
+    //     mutex_unlock(servo_handler.lock);
+    //     return ESP_ERR_INVALID_ARG;
+    // }
+    // theta5 = 45;
 
-    //******************orient kinetic************************//
+    double d = 33; // z = 0;
+    double a2 = 10.5, a3 = 9.6, a4 = 19.7;
 
-    double r = sqrt(x * x + y * y - d * d), phi = atan2d(y, x) + atan2d(d, r), s = d1 - z;
-    r -= a;
-    /*3 edge of triangle*/
-    double m1 = sqrt(a2 * a2 + a3 * a3 + 2 * a2 * a3 * cosd(theta3)), m2 = d5,
-           m3 = sqrt(r * r + s * s);
-    /*sum of theta2 + theta3 + theta4*/
-    double beta1 = atan2d(s, r), cbeta2 = -(m1 * m1 - m2 * m2 - m3 * m3) / (2 * m2 * m3),
-           sbeta2 = sqrt(1 - cbeta2 * cbeta2), beta2 = atan2d(sbeta2, cbeta2),
-           beta = 90.0 + beta1 + beta2;
-    /*assign T matrix*/
-    double cp = cosd(phi), sp = sind(phi), cb = cosd(beta), sb = sind(beta);
-
-    /*
-    // T =  |cb * cp    -sp     sb * cp    x|
-    //      |cb * sp     cp     sb * sp    y|
-    //      |-sb         0      cb         z|
-    */
-    double nx = cb * cp, ny = cb * sp;     //, nz = -sb;
-    double ox = -sp, oy = cp;              //, oz = 0;
-    double ax = sb * cp, ay = sb * sp, az = cb;
-    double dx = x, dy = y, dz = z;
-
-    // move cripper to d4
-    dx -= d5 * ax;
-    dy -= d5 * ay;
-    dz -= d5 * az;
-
-    //******************inverse kinetic************************//
-    /*theta1 */
-    // double r = sqrt(dx * dx + dy * dy - d * d);
-    double theta1 = atan2d(dy, dx) + atan2d(d, r);
-    double s1 = sind(theta1), c1 = cosd(theta1);
-    /*theta3 and theta2*/
-    r -= a;
-    s = dz - d1;
-    double c3 = (r * r + s * s - a2 * a2 - a3 * a3) / (2 * a2 * a3),
-           s3 = -sqrt(1 - c3 * c3);
-
-    theta3 = atan2d(s3, c3);
-    double theta2 = atan2d(s, r) - atan2d(a3 * s3, a2 + a3 * c3);
-    /*theta4*/
-    double theta23 = theta2 + theta3, c23 = cosd(theta23), s23 = sind(theta23),
-           s4 = az * s23 + ax * c23 * c1 + ay * c23 * s1,
-           c4 = -(az * c23 - ax * s23 * c1 - ay * s23 * s1);
-
-    double theta4 = atan2d(s4, c4);
-    /*theta5*/
-    double s5 = nx * s1 - ny * c1, c5 = ox * s1 - oy * c1;
-    double theta5 = atan2d(s5, c5);
-
-    //******************conver to duty************************//
-
-    if (theta1 >= -45 && theta1 <= 45)
-        theta1 += (45 + atan2d(-2.9, 13.5));     // bu` goc 1
-    else {
-        ESP_LOGE(TAG, "theta1 out of range[-45 45]: %lf", theta1);
-        mutex_unlock(servo_handler.lock);
-        return ESP_ERR_INVALID_ARG;
+    double theta2 = 90;
+    while (_is_in_workspace_3link_robot(d, z, theta2, a2, a3, a4) == false) {
+        theta2--;
+        if (theta2 == 0) {
+            ESP_LOGE(TAG, "position is out of workspace");
+            return ESP_ERR_INVALID_ARG;
+        }
     }
-    if (theta2 >= 0 && theta2 <= 90)
-        theta2 = 90 - theta2;
-    else {
-        // error
-        ESP_LOGE(TAG, "theta2 out of range[0 90]: %lf", theta2);
-        mutex_unlock(servo_handler.lock);
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (theta3 >= -90 && theta3 <= 0)
-        theta3 = 90 + theta3 - 8;
-    else {
-        // error
-        ESP_LOGE(TAG, "theta3 out of range[-90 0]: %lf", theta3);
-        mutex_unlock(servo_handler.lock);
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (theta4 >= -90 && theta4 <= 0)
-        theta4 = 90 + theta4 - 5;
-    else {
-        // error
-        ESP_LOGE(TAG, "theta4 out of range[-90 0]: %lf", theta4);
-        mutex_unlock(servo_handler.lock);
-        return ESP_ERR_INVALID_ARG;
-    }
-    theta5 = 45;
 
-    // memcpy(debug, theta, sizeof(double) * 5);
-    ESP_LOGI(TAG, "set duty of 5 channel in robot");
-    _servo_set_duty(_degree2duty(theta1), SERVO_CHANNEL_0);
-    _servo_set_duty(_degree2duty(theta2), SERVO_CHANNEL_1);
-    _servo_set_duty(_degree2duty(theta3), SERVO_CHANNEL_2);
-    _servo_set_duty(_degree2duty(theta4), SERVO_CHANNEL_3);
-    _servo_set_duty(_degree2duty(theta5), SERVO_CHANNEL_4);
-    mutex_unlock(servo_handler.lock);
+    double z2 = a2 * sind(theta2);
+    double d2 = a2 * cosd(theta2);
+    double r24 = sqrt((z - z2) * (z - z2) + (d - d2) * (d - d2));
+    double c4 = (r24 * r24 - a3 * a3 - a4 * a4) / (2 * a3 * a4);
+    double s4 = sqrt(1 - c4 * c4);
+
+    // theta4 < 0 => clockwise, -135 => -45
+    double theta4 = atan2d(-s4, c4);
+
+    // theta3 < 0 => clockwise
+    double phi = acosd((r24 * r24 + a3 * a3 - a4 * a4) / (2 * r24 * a3));     // 0 => 180
+    double alpha = atan2d(z - z2, d - d2);                                    // -90 => 90
+    double theta3 = -(theta2 - phi - alpha);     // => theta3: -90 => 180
+
+    printf("%lf , %lf, %lf", theta2, theta3, theta4);
+    // // memcpy(debug, theta, sizeof(double) * 5);
+    // ESP_LOGI(TAG, "set duty of 5 channel in robot");
+    // _servo_set_duty(_degree2duty(theta1), SERVO_CHANNEL_0);
+    // _servo_set_duty(_degree2duty(theta2), SERVO_CHANNEL_1);
+    // _servo_set_duty(_degree2duty(theta3), SERVO_CHANNEL_2);
+    // _servo_set_duty(_degree2duty(theta4), SERVO_CHANNEL_3);
+    // _servo_set_duty(_degree2duty(theta5), SERVO_CHANNEL_4);
+    // mutex_unlock(servo_handler.lock);
     return ESP_OK;
 }
 
@@ -694,6 +742,7 @@ int _width2duty(double width)
 
     if (width < 3.0) {
         duty = (int)1800;
+
     } else if (width >= 3.0 && width <= 4.5) {
         duty = (int)(width * a1 + b1);
     } else if (width > 4.5 && width <= 5.5) {
@@ -714,6 +763,7 @@ esp_err_t robot_set_cripper_width(double width)
     }
     mutex_lock(servo_handler.lock);
     _servo_set_duty(duty, SERVO_CHANNEL_5);
+    ESP_LOGI(TAG, "width set: %lf", width);
     mutex_unlock(servo_handler.lock);
     return ESP_OK;
 }
