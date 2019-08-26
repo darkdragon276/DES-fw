@@ -85,19 +85,23 @@ typedef struct {
     int duty_current;     // duty current
     int duty_target;      // duty target
     int step;
-
     servo_status_t status;
 } servo_channel_ctrl_t;
 
 typedef struct {
     servo_channel_ctrl_t channel[6];
-
     uint32_t time_fade;     // time_step to caculate
-
     servo_rqst_t user_request;
     servo_status_t status;
     SemaphoreHandle_t lock;
 } servo_t;
+
+typedef struct {
+    double scale;
+    double bias;
+    double under_limit;
+    double upper_libit;
+}
 /*
  *
  ****************GLOBAL VARAIABLE DECLARE*******************
@@ -447,28 +451,22 @@ static void _servo_run_task(void *arg)
         event_handler_t event_handler = {0};
         if (xQueueReceive(event_queue, &event_handler, portMAX_DELAY)) {
             if (event_handler.event_type == EVENT_TIMER && event_handler.event_id == EVENT_ID_TIMER_SERVO) {
-
                 mutex_lock(servo_handler.lock);
-
                 for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
                     _servo_channel_check_duty_error(&servo_handler.channel[i]);
                 }
-
                 if (_servo_check_status(&servo_handler) == SERVO_STATUS_IDLE) {
                     _servo_step_cal(&servo_handler);
                 }
-
                 _servo_duty_add_step(&servo_handler);
-                // ESP_LOGI(TAG, "pwm out");
                 // export pwm
+                ESP_LOGD(TAG, "pwm out");
                 _servo_mcpwm_out(&servo_handler, servo_config);
                 ESP_LOGD(TAG, "pwm out");
-
                 mutex_unlock(servo_handler.lock);
             }
         }
-
-        vTaskDelay(10 / portTICK_RATE_MS);
+        vTaskDelay(1 / portTICK_RATE_MS);
     }
 }
 

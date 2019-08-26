@@ -5,4 +5,4 @@ BreakBeforeBraces: Linux
 SpacesBeforeTrailingComments: 5
 AllowShortIfStatementsOnASingleLine: false
 IndentCaseLabels: false
-ColumnLimit: 90
+ColumnLimit: 120
