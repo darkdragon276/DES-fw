@@ -21,7 +21,7 @@
 #define SERVO_CHANNEL_5 (5)
 
 #define SERVO_MAX_CHANNEL (6)
-#define SERVO_TIME_STEP (100)     // 100 ms is timer isr step to caculate
+#define servo_handle_tIME_STEP (100)     // 100 ms is timer isr step to caculate
 
 #define TIMER_DIVIDER (80)
 #define TIMER_SCALE_SEC (1000000U)
@@ -32,29 +32,27 @@
 
 #define EVENT_ID_BASE (0x11)
 
+// semaphore macro
 #define mutex_lock(x) while (xSemaphoreTake(x, portMAX_DELAY) != pdPASS)
 #define mutex_unlock(x) xSemaphoreGive(x)
 #define mutex_create() xSemaphoreCreateMutex()
 #define mutex_destroy(x) vQueueDelete(x)
 
-#define PI acos(-1)
+// event bit wait macro
+#define event_clear(event_handler, bit) xEventGroupClearBits(event_handler, bit)
+#define event_set(event_handler, bit) xEventGroupSetBits(event_handler, bit)
+#define event_wait(event_handler, bit) while (!xEventGroupWaitBits(event_handler, bit, false, false, portMAX_DELAY))
 
 /*
  *
  ****************ENUM DECLARE*******************
  *
  */
-typedef enum {
-    EVENT_GPIO = 0,
-    EVENT_TIMER,
-} event_type_t;
 
 typedef enum {
-    EVENT_ID_BTN_L = EVENT_ID_BASE,
-    EVENT_ID_BTN_R,
-    EVENT_ID_BTN_M,
-    EVENT_ID_TIMER_SERVO,
-} event_id_t;
+    EVENT_TIMER_SERVO = EVENT_ID_BASE,
+    EVENT_CALIB_MANUAL,
+} event_type_t;
 
 typedef enum {
     SERVO_STATUS_ERROR = -1,
@@ -75,12 +73,6 @@ typedef struct {
     uint64_t pinnum;
 } servo_config_t;
 
-// event handle struct
-typedef struct {
-    event_type_t event_type;
-    uint32_t event_id;
-} event_handler_t;
-
 typedef struct {
     int duty_current;     // duty current
     int duty_target;      // duty target
@@ -89,34 +81,41 @@ typedef struct {
 } servo_channel_ctrl_t;
 
 typedef struct {
-    servo_channel_ctrl_t channel[6];
-    uint32_t time_fade;     // time_step to caculate
-    servo_rqst_t user_request;
-    servo_status_t status;
-    SemaphoreHandle_t lock;
-} servo_t;
-
-typedef struct {
     double scale;
     double bias;
     double under_limit;
     double upper_libit;
-}
+} servo_channel_calib_t;
+
+typedef struct {
+    servo_channel_ctrl_t channel[6];
+    servo_channel_calib_t calib[6];
+    uint32_t time_fade;     // time_step to caculate
+    servo_rqst_t user_request;
+    servo_status_t status;
+    SemaphoreHandle_t lock;
+    EventGroupHandle_t event_wait;
+} servo_handle_t;
+
 /*
  *
  ****************GLOBAL VARAIABLE DECLARE*******************
  *
  */
-static xQueueHandle event_queue = NULL;
-static servo_t servo_handler = {0};
+
+static servo_handle_t servo_handler;
+xQueueHandle event_queue;
+static const int EVT_SERVO_RUN = BIT0;
+static const int EVT_SERVO_CALIB = BIT1;
+
 /*
  *
  ****************FUNCTION DECLARE*******************
  *
  */
-servo_status_t _servo_check_status(servo_t *servo);
+servo_status_t _servo_check_status(servo_handle_t *servo);
 servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel);
-void _servo_step_cal(servo_t *servo);
+void _servo_step_cal(servo_handle_t *servo);
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel);
 
 static void _servo_run_task(void *arg);
@@ -124,12 +123,13 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
 void IRAM_ATTR _timer_group0_isr(void *para);
 
 void _pwm_parameter_assign(servo_config_t *servo_config);
-void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config);
+void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
 void _servo_set_duty(int duty, int channel);
 
 // math function
+#define PI acos(-1)
 double atan2d(double y, double x) { return atan2(y, x) * 180.0 / PI; }
 double cosd(double x) { return cos(x * PI / 180.0); }
 double sind(double x) { return sin(x * PI / 180.0); }
@@ -182,34 +182,6 @@ void _servo_set_duty(int duty, int channel)
     servo_handler.channel[channel].duty_target = duty;
     ESP_LOGI(TAG, "servo set duty: %d us ", duty);
 }
-
-// void servo_set_request(servo_rqst_t rqst)
-// {
-//     const char *TAG = "servo_set_request";
-//     if (servo_get_stt() == SERVO_STT_STOP) {
-//         servo_rqst = rqst;
-//         ESP_LOGI(TAG, "servo request set OK");
-//         return;
-//     } else if (servo_get_stt() == SERVO_STT_RUN) {
-//         if (rqst == SERVO_RQST_STOP) {
-//             servo_rqst = rqst;
-//             ESP_LOGI(TAG, "servo request set OK");
-//             return;
-//         }
-//     }
-//     ESP_LOGE(TAG, "servo is running, can't set orther position");
-// }
-
-// servo_rqst_t servo_get_request(void) { return servo_rqst; }
-
-// servo_stt_t servo_get_stt(void)
-// {
-//     if (servo_stt_all == SERVO_ALL_IDLE) {
-//         return SERVO_STT_STOP;
-//     }
-//     return SERVO_STT_RUN;
-// }
-
 /*
  *
  ****************SERVO STATUS CHECK*******************
@@ -224,15 +196,14 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
                  (int)servo_channel->duty_target);
         return SERVO_STATUS_ERROR;
     }
-    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) ||
-        servo_channel->step == 0) {
+    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) || servo_channel->step == 0) {
         servo_channel->status = SERVO_STATUS_IDLE;
         return SERVO_STATUS_IDLE;
     }
     return SERVO_STATUS_RUNNING;
 }
 
-servo_status_t _servo_check_status(servo_t *servo)
+servo_status_t _servo_check_status(servo_handle_t *servo)
 {
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_IDLE) {
@@ -275,13 +246,13 @@ void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel)
  *
  */
 
-void _servo_step_cal(servo_t *servo)
+void _servo_step_cal(servo_handle_t *servo)
 {
     const char *TAG = "file: servo_control.c , function: _servo_step_cal";
     if (_servo_check_status(servo) == SERVO_STATUS_IDLE) {
         for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
             servo->channel[i].step = (int)(servo->channel[i].duty_target - servo->channel[i].duty_current) /
-                                     (int)(servo->time_fade / SERVO_TIME_STEP);
+                                     (int)(servo->time_fade / servo_handle_tIME_STEP);
         }
         ESP_LOGD(TAG, "step[6] is : %d ,%d ,%d ,%d ,%d ,%d", servo->channel[0].step, servo->channel[1].step,
                  servo->channel[2].step, servo->channel[3].step, servo->channel[4].step, servo->channel[5].step);
@@ -293,7 +264,7 @@ void _servo_step_cal(servo_t *servo)
 }
 
 // set pwm out
-void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config)
+void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config)
 {
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         _servo_channel_check_duty_error(&servo->channel[i]);
@@ -303,7 +274,7 @@ void _servo_mcpwm_out(servo_t *servo, servo_config_t *servo_config)
 }
 
 // add step per cycle
-void _servo_duty_add_step(servo_t *servo)
+void _servo_duty_add_step(servo_handle_t *servo)
 {
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         servo->channel[i].duty_current += servo->channel[i].step;
@@ -326,10 +297,7 @@ void IRAM_ATTR _timer_group0_isr(void *para)
 {
     TIMERG0.hw_timer[0].update = 1;
     TIMERG0.int_clr_timers.t0 = 1;
-    event_handler_t event_handler = {
-        .event_type = EVENT_TIMER,
-        .event_id = EVENT_ID_TIMER_SERVO,
-    };
+    event_type_t event_handler = EVENT_TIMER_SERVO;
     xQueueSendFromISR(event_queue, &event_handler, NULL);
     TIMERG0.hw_timer[0].config.alarm_en = TIMER_ALARM_EN;
 }
@@ -357,8 +325,7 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
     timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, timer_interval * TIMER_SCALE);
 
     timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-    ESP_ERROR_CHECK(
-        timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr, (void *)TIMER_0, ESP_INTR_FLAG_IRAM, NULL));
+    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr, (void *)TIMER_0, ESP_INTR_FLAG_IRAM, NULL));
 
     ESP_ERROR_CHECK(timer_start(TIMER_GROUP_0, TIMER_0));
     ESP_LOGI(TAG, "timer isr init %d ms: OK", (int)timer_interval);
@@ -416,10 +383,10 @@ void _pwm_parameter_assign(servo_config_t *servo_config)
     ESP_LOGI(TAG, "servo's 6 channels are assigned:  OK");
 }
 
-void _servo_parameter_assign(servo_t *servo)
+void _servo_parameter_assign(servo_handle_t *servo)
 {
     int home[6] = {1500, 1000, 2000, 2000, 1500, 1500};
-    memset(servo, 0, sizeof(servo_t));
+    memset(servo, 0, sizeof(servo_handle_t));
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         servo->channel[i].duty_current = home[i];
         servo->channel[i].duty_target = home[i];
@@ -444,13 +411,13 @@ static void _servo_run_task(void *arg)
 
     servo_config_t *servo_config = (servo_config_t *)malloc(6 * sizeof(servo_config_t));
     _pwm_parameter_assign(servo_config);
-
+    // load he so calib neu co
     ESP_LOGI(TAG, "servo_run_task starting ...");
     while (1) {
 
-        event_handler_t event_handler = {0};
+        event_type_t event_handler;
         if (xQueueReceive(event_queue, &event_handler, portMAX_DELAY)) {
-            if (event_handler.event_type == EVENT_TIMER && event_handler.event_id == EVENT_ID_TIMER_SERVO) {
+            if (event_handler == EVENT_TIMER_SERVO) {
                 mutex_lock(servo_handler.lock);
                 for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
                     _servo_channel_check_duty_error(&servo_handler.channel[i]);
@@ -460,16 +427,28 @@ static void _servo_run_task(void *arg)
                 }
                 _servo_duty_add_step(&servo_handler);
                 // export pwm
-                ESP_LOGD(TAG, "pwm out");
+                ESP_LOGI(TAG, "pwm out");
                 _servo_mcpwm_out(&servo_handler, servo_config);
-                ESP_LOGD(TAG, "pwm out");
                 mutex_unlock(servo_handler.lock);
+            } else if (event_handler == EVENT_CALIB_MANUAL) {
+                timer_pause(TIMER_GROUP_0, TIMER_0);
+                vTaskDelay(10000 / portTICK_RATE_MS);
+                // load he so calib neu co
+                timer_start(TIMER_GROUP_0, TIMER_0);
             }
         }
         vTaskDelay(1 / portTICK_RATE_MS);
     }
 }
 
+esp_err_t robot_calib_manual_request(void)
+{
+    const char *TAG = "file: servo_control.c , function: robot_calib_manual_request";
+    event_type_t event_handler = EVENT_CALIB_MANUAL;
+    xQueueSendToFront(event_queue, &event_handler, 0);
+    ESP_LOGI(TAG, "Request Calib manual sending ...");
+    return ESP_OK;
+}
 /*
 *********************************SERVO INIT**********************************
 */
@@ -496,8 +475,9 @@ void servo_init(void)
     free(servo_config);
     ESP_LOGI(TAG, "servo 6 channels config:  OK");
 
-    _timer_init(TIMER_AUTO_RELOAD, SERVO_TIME_STEP, TIMER_SCALE_MS);
-    event_queue = xQueueCreate(20, sizeof(event_handler_t));
+    _timer_init(TIMER_AUTO_RELOAD, servo_handle_tIME_STEP, TIMER_SCALE_MS);
+    event_queue = xQueueCreate(20, sizeof(event_type_t));
+    servo_handler.event_wait = xEventGroupCreate();
     _servo_parameter_assign(&servo_handler);
     xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
 }
@@ -568,7 +548,6 @@ bool _math_in_workspace(double d, double z, double theta, double r1, double r2, 
 double _math_scale_argument(double arg, double scale, double bias, double under_limit, double upper_limit)
 {
     double temp = arg * scale + bias;
-    ESP_LOGW("debug line 573", "%lf", temp);
     if (temp > upper_limit) {
         return upper_limit;
     }
@@ -614,13 +593,15 @@ esp_err_t robot_set_position(double x, double y, double z)
     double theta5 = 45;
 
     // calib
-    ESP_LOGW("debug line 617", "%lf , %lf, %lf, %lf", theta1, theta2, theta3, theta4);
+    ESP_LOGD(TAG, "argument caculate: theta1: %.2lf, theta2: %.2lf, theta3: %.2lf, theta4: %.2lf, theta5: %.2lf", theta1, theta2,
+             theta3, theta4, theta5);
     theta1 = _math_scale_argument(theta1, 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
     theta2 = _math_scale_argument(theta2, -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
     theta3 = _math_scale_argument(theta3, 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
     theta4 = _math_scale_argument(theta4, 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
     theta5 = _math_scale_argument(theta5, 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
-    ESP_LOGW("debug line 622", "%lf , %lf, %lf, %lf", theta1, theta2, theta3, theta4);
+    ESP_LOGD(TAG, "argument after scale off: theta1: %.2lf, theta2: %.2lf, theta3: %.2lf, theta4: %.2lf, theta5: %.2lf", theta1,
+             theta2, theta3, theta4, theta5);
 
     // convert to duty
     _servo_set_duty(_math_deg2duty(theta1), SERVO_CHANNEL_0);
@@ -646,8 +627,7 @@ int _width2duty(double width)
 {
     const char *TAG = "file: servo_control.c , function: _width2duty";
     if (width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH) {
-        ESP_LOGE(TAG, "width is: %.1lf out of range [%.1lf:%.1lf]", width, ROBOT_CRIPPER_MIN_WIDTH,
-                 ROBOT_CRIPPER_MAX_WIDTH);
+        ESP_LOGE(TAG, "width is: %.1lf out of range [%.1lf:%.1lf]", width, ROBOT_CRIPPER_MIN_WIDTH, ROBOT_CRIPPER_MAX_WIDTH);
         return 0;
     }
 
@@ -681,7 +661,7 @@ esp_err_t robot_set_cripper_width(double width)
     }
     mutex_lock(servo_handler.lock);
     _servo_set_duty(duty, SERVO_CHANNEL_5);
-    ESP_LOGI(TAG, "width set: %lf", width);
+    ESP_LOGI(TAG, "width set: %.1lf", width);
     mutex_unlock(servo_handler.lock);
     return ESP_OK;
 }

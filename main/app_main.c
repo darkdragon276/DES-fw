@@ -60,7 +60,7 @@ static void uart_task(void *pv)
             sscanf((const char *)data, "%lf %lf %lf %lf", &x, &y, &z, &width);
             robot_set_cripper_width(width);
             robot_set_position(x, y, z);
-
+            robot_calib_manual_request();
             ESP_LOGI("UART_TAG", "x: %.1lf, y: %.1lf, z: %.1lf, width: %.1lf", x, y, z,
                      width);
             // echo
