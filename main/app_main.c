@@ -82,7 +82,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // test case uart slip
+    servo_init();     // start timer and servo run task
+    ESP_LOGI(TAG, "uart_task starting ...");
+    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
+}
+
+// test case uart slip
     // char data[4] = {0x30, 0x40, 0x7D, 0x7F};
 
     // char *package = (char *)malloc(2 * sizeof(char));
@@ -96,11 +101,3 @@ void app_main(void)
     // for (int i = 0; i < buff_len; i++) {
     //     ESP_LOGI("debug", "buff[%d]: %X ", i, buff[i]);
     // }
-
-    robot_set_position(1, 1, 0);
-    servo_init();     // start timer and servo run task
-    ESP_LOGI(TAG, "uart_task starting ...");
-
-    // robot_set_cripper_width(5);
-    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
-}
