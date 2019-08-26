@@ -21,11 +21,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
-typedef enum {
-    SERVO_RQST_STOP = 0,
-    SERVO_RQST_RUN,
-} servo_rqst_t;
-
 extern uint32_t servo_time;
 
 void servo_init(void);

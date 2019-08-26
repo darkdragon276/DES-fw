@@ -38,10 +38,10 @@
 #define mutex_create() xSemaphoreCreateMutex()
 #define mutex_destroy(x) vQueueDelete(x)
 
-// event bit wait macro
-#define event_clear(event_handler, bit) xEventGroupClearBits(event_handler, bit)
-#define event_set(event_handler, bit) xEventGroupSetBits(event_handler, bit)
-#define event_wait(event_handler, bit) while (!xEventGroupWaitBits(event_handler, bit, false, false, portMAX_DELAY))
+// // event bit wait macro
+// #define event_clear(event_handler, bit) xEventGroupClearBits(event_handler, bit)
+// #define event_set(event_handler, bit) xEventGroupSetBits(event_handler, bit)
+// #define event_wait(event_handler, bit) while (!xEventGroupWaitBits(event_handler, bit, false, false, portMAX_DELAY))
 
 /*
  *
@@ -91,10 +91,8 @@ typedef struct {
     servo_channel_ctrl_t channel[6];
     servo_channel_calib_t calib[6];
     uint32_t time_fade;     // time_step to caculate
-    servo_rqst_t user_request;
     servo_status_t status;
     SemaphoreHandle_t lock;
-    EventGroupHandle_t event_wait;
 } servo_handle_t;
 
 /*
@@ -105,8 +103,6 @@ typedef struct {
 
 static servo_handle_t servo_handler;
 xQueueHandle event_queue;
-static const int EVT_SERVO_RUN = BIT0;
-static const int EVT_SERVO_CALIB = BIT1;
 
 /*
  *
@@ -395,8 +391,8 @@ void _servo_parameter_assign(servo_handle_t *servo)
     }
     servo->status = SERVO_STATUS_IDLE;
     servo->time_fade = 1000;     // 1000 ms
-    servo->user_request = 0;
     servo->lock = mutex_create();
+
 }
 
 /*
@@ -477,7 +473,6 @@ void servo_init(void)
 
     _timer_init(TIMER_AUTO_RELOAD, servo_handle_tIME_STEP, TIMER_SCALE_MS);
     event_queue = xQueueCreate(20, sizeof(event_type_t));
-    servo_handler.event_wait = xEventGroupCreate();
     _servo_parameter_assign(&servo_handler);
     xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
 }
@@ -665,6 +660,13 @@ esp_err_t robot_set_cripper_width(double width)
     mutex_unlock(servo_handler.lock);
     return ESP_OK;
 }
+/*
+ *
+ **************** NVS FLASH LOAD AND SAVE PARAMETER *******************
+ *
+ */
+
+
 
 /*
  *
