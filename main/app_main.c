@@ -26,7 +26,6 @@
 #include "esp_log.h"
 
 #include "servo_control.h"
-#include "esp_storage.h"
 
 static const char *TAG = "ROBOT";
 
