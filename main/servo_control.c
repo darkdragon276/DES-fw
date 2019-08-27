@@ -99,7 +99,7 @@ typedef struct {
 
 /*
  *
- ****************GLOBAL VARAIABLE DECLARE*******************
+ ******************GLOBAL VARAIABLE DECLARE*******************
  *
  */
 
@@ -138,9 +138,10 @@ int _math_deg2duty(double deg);
 double _math_scale(double arg, double scale, double bias, double under_limit, double upper_limit);
 bool _math_in_circle(double x, double y, double x0, double y0, double R0);
 bool _math_in_workspace(double d, double z, double theta, double r1, double r2, double r3);
+
 /*
  *
- ****************FUNCTION ACCESS DATA*******************
+ ****************************************FUNCTION ACCESS DATA*******************************************
  *
  */
 
@@ -185,7 +186,7 @@ void _servo_set_duty(int duty, int channel)
 }
 /*
  *
- ****************SERVO STATUS CHECK*******************
+ ********************************************SERVO STATUS CHECK*****************************************
  *
  */
 
@@ -197,7 +198,8 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
                  (int)servo_channel->duty_target);
         return SERVO_STATUS_ERROR;
     }
-    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) || servo_channel->step == 0) {
+    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) ||
+        servo_channel->step == 0) {
         servo_channel->status = SERVO_STATUS_IDLE;
         return SERVO_STATUS_IDLE;
     }
@@ -243,7 +245,7 @@ void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel)
 }
 /*
  *
- ****************CACULATE AND RUNNING*******************
+ **************************************SET STEP AND EXPORT PWM****************************************
  *
  */
 
@@ -252,8 +254,8 @@ void _servo_step_cal(servo_handle_t *servo)
     const char *TAG = "file: servo_control.c , function: _servo_step_cal";
     if (_servo_check_status(servo) == SERVO_STATUS_IDLE) {
         for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-            servo->channel[i].step =
-                (int)(servo->channel[i].duty_target - servo->channel[i].duty_current) / (int)(servo->time_fade / SERVO_TIME_STEP);
+            servo->channel[i].step = (int)(servo->channel[i].duty_target - servo->channel[i].duty_current) /
+                                     (int)(servo->time_fade / SERVO_TIME_STEP);
         }
         ESP_LOGD(TAG, "step[6] is : %d ,%d ,%d ,%d ,%d ,%d", servo->channel[0].step, servo->channel[1].step,
                  servo->channel[2].step, servo->channel[3].step, servo->channel[4].step, servo->channel[5].step);
@@ -292,7 +294,7 @@ void _servo_duty_add_step(servo_handle_t *servo)
 
 /*
  *
- ****************TIMER EVENT HANDLE*******************
+ *********************************************TIMER EVENT HANDLE**************************************************
  *
  */
 
@@ -328,7 +330,8 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
     timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, timer_interval * TIMER_SCALE);
 
     timer_enable_intr(TIMER_GROUP_0, TIMER_0);
-    ESP_ERROR_CHECK(timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr, (void *)TIMER_0, ESP_INTR_FLAG_IRAM, NULL));
+    ESP_ERROR_CHECK(
+        timer_isr_register(TIMER_GROUP_0, TIMER_0, _timer_group0_isr, (void *)TIMER_0, ESP_INTR_FLAG_IRAM, NULL));
 
     ESP_ERROR_CHECK(timer_start(TIMER_GROUP_0, TIMER_0));
     ESP_LOGI(TAG, "timer isr init %d ms: OK", (int)timer_interval);
@@ -336,7 +339,7 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
 
 /*
  *
- ****************SERVO INIT AND RUN *******************
+ *****************************************ASSIGN PARAMATER ****************************************
  *
  */
 
@@ -386,6 +389,7 @@ void _pwm_config_set_default(servo_config_t *servo_config)
     ESP_LOGI(TAG, "servo's 6 channels are assigned:  OK");
 }
 
+// assign parameter of servo handle
 void _servo_param_set_default(servo_handle_t *servo)
 {
     memset(servo, 0, sizeof(servo_handle_t));
@@ -493,7 +497,7 @@ void servo_init(void)
 
 /*
  *
- ******************************* MATH FUNCTION ************************
+ *********************************************** MATH FUNCTION ************************************************
  *
  */
 
@@ -565,8 +569,12 @@ double _math_scale(double arg, double scale, double bias, double under_limit, do
     }
     return temp;
 }
-/********************************************************************************/
-/***********************   Kinetic Calculate funciton   *************************/
+
+/*
+ *
+ * ***************************************Kinetic Calculate funciton**********************************************
+ *
+ */
 // preprocess to put x y z position
 // function return pointer of xyzther3 array
 esp_err_t robot_set_position(double x, double y, double z)
@@ -604,23 +612,26 @@ esp_err_t robot_set_position(double x, double y, double z)
     theta[4] = 45;
 
     // convert arguments
-    ESP_LOGD(TAG, "argument caculate: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGD(TAG,
+             "argument caculate: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
     theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
     theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
     theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
     theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
     theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
-    ESP_LOGD(TAG, "argument after scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
-             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    ESP_LOGD(
+        TAG,
+        "argument after scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+        theta[0], theta[1], theta[2], theta[3], theta[4]);
 
     // convert to duty
     int duty[5];
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
         duty[i] = _math_deg2duty(theta[i]);
     }
-    ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0], duty[1],
-             duty[2], duty[3], duty[4]);
+    ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+             duty[1], duty[2], duty[3], duty[4]);
 
     // calib duty
     int duty_scale[5];
@@ -628,8 +639,8 @@ esp_err_t robot_set_position(double x, double y, double z)
         duty_scale[i] = _math_scale(duty[i], servo_handler.duty_calib[i].scale, servo_handler.duty_calib[i].bias,
                                     servo_handler.duty_calib[i].under_limit, servo_handler.duty_calib[i].upper_limit);
     }
-    ESP_LOGD(TAG, "duty after calib: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0], duty[1], duty[2],
-             duty[3], duty[4]);
+    ESP_LOGD(TAG, "duty after calib: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0], duty[1],
+             duty[2], duty[3], duty[4]);
 
     // set duty to run servo
     // i = SERVO_CHANNEL_[I]
@@ -640,7 +651,7 @@ esp_err_t robot_set_position(double x, double y, double z)
     return ESP_OK;
 }
 
-/****** CRIPPER WIDE WITH PULSE ******
+/************************************* CRIPPER WIDE WITH PULSE *********************************************
  * PULSE (us)    1900    1800    1700    1600    1500    1400    1300    1200    1100
  *------------------------------------------------------------------------------------
  * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
@@ -654,7 +665,8 @@ int _width2duty(double width)
 {
     const char *TAG = "file: servo_control.c , function: _width2duty";
     if (width < ROBOT_CRIPPER_MIN_WIDTH || width > ROBOT_CRIPPER_MAX_WIDTH) {
-        ESP_LOGE(TAG, "width is: %.1lf out of range [%.1lf:%.1lf]", width, ROBOT_CRIPPER_MIN_WIDTH, ROBOT_CRIPPER_MAX_WIDTH);
+        ESP_LOGE(TAG, "width is: %.1lf out of range [%.1lf:%.1lf]", width, ROBOT_CRIPPER_MIN_WIDTH,
+                 ROBOT_CRIPPER_MAX_WIDTH);
         return 0;
     }
 
@@ -694,7 +706,7 @@ esp_err_t robot_set_cripper_width(double width)
 }
 /*
  *
- **************** NVS FLASH LOAD AND SAVE PARAMETER *******************
+ **************************************** NVS FLASH LOAD AND SAVE PARAMETER ***************************************
  *
  */
 static const char *SERVO_NVS = "servo_nvs";
@@ -714,6 +726,8 @@ static esp_err_t _unpack_func(void *context, char *buffer, int loaded_len)
     return ESP_OK;
 }
 
+// init and load data default if can't
+// find its in flash
 esp_err_t servo_nvs_load(void)
 {
     const char *TAG = "file: servo_control.c , function: servo_nvs_load";
@@ -748,6 +762,8 @@ esp_err_t servo_nvs_load(void)
 }
 
 // save param after timeout second
+// This function must between timer_stop();
+// and timer_start(); function.
 esp_err_t servo_nvs_save_timeout(int timeout_sec)
 {
     _save_time = timeout_sec;
@@ -777,7 +793,8 @@ static void _servo_nvs_task(void *arg)
 
 /*
  *
- **************** UART pack and unpack function *******************
+ ***************************************** UART pack and unpack function*******************************************
+ *
  *
  */
 

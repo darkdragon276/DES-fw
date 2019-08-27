@@ -41,8 +41,11 @@ esp_err_t robot_calib_manual_request(void);
 int msg_unpack(char *pkg, int pkg_len, char *buffer);
 int msg_pack(char *buff, int buff_len, char *package);
 
-// NVS
+// init and load data default if can't
+// find its in flash
 esp_err_t servo_nvs_load(void);
+
+// set timeout for save parameter to flash
 esp_err_t servo_nvs_save_timeout(int timeout_sec);
 
 #endif
