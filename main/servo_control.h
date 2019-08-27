@@ -42,8 +42,7 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer);
 int msg_pack(char *buff, int buff_len, char *package);
 
 // NVS
-esp_err_t nvs_load();
-void nvs_save();
-esp_err_t nvs_set_timeout(int timeout_ms);
+esp_err_t servo_nvs_load(void);
+esp_err_t servo_nvs_save_timeout(int timeout_sec);
 
 #endif

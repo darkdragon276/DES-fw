@@ -75,13 +75,7 @@ void app_main(void)
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
 
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
+    servo_nvs_load();
     servo_init();     // start timer and servo run task
     ESP_LOGI(TAG, "uart_task starting ...");
     xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);

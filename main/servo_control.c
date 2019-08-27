@@ -22,6 +22,7 @@
 
 #define SERVO_MAX_CHANNEL (6)
 #define SERVO_TIME_STEP (100)     // 100 ms is timer isr step to caculate
+#define SERVO_NVS_MAGIC (0x270697)
 
 #define TIMER_DIVIDER (80)
 #define TIMER_SCALE_SEC (1000000U)
@@ -93,6 +94,7 @@ typedef struct {
     uint32_t time_fade;     // time_step to caculate
     servo_status_t status;
     SemaphoreHandle_t lock;
+    int nvs_magic;
 } servo_handle_t;
 
 /*
@@ -115,10 +117,12 @@ void _servo_step_cal(servo_handle_t *servo);
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel);
 
 static void _servo_run_task(void *arg);
+static void _servo_nvs_task(void *arg);
 static void _timer_init(bool auto_reload, double timer_interval, const int TIMER_SCALE);
 void IRAM_ATTR _timer_group0_isr(void *para);
 
-void _pwm_parameter_assign(servo_config_t *servo_config);
+void _pwm_config_set_default(servo_config_t *servo_config);
+void _servo_param_set_default(servo_handle_t *servo);
 void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
@@ -131,6 +135,7 @@ double cosd(double x) { return cos(x * PI / 180.0); }
 double sind(double x) { return sin(x * PI / 180.0); }
 double acosd(double x) { return acos(x) * 180.0 / PI; }
 int _math_deg2duty(double deg);
+double _math_scale(double arg, double scale, double bias, double under_limit, double upper_limit);
 bool _math_in_circle(double x, double y, double x0, double y0, double R0);
 bool _math_in_workspace(double d, double z, double theta, double r1, double r2, double r3);
 /*
@@ -336,9 +341,9 @@ static void _timer_init(bool auto_reload, double timer_interval, const int TIMER
  */
 
 // assign config parameter
-void _pwm_parameter_assign(servo_config_t *servo_config)
+void _pwm_config_set_default(servo_config_t *servo_config)
 {
-    const char *TAG = "file: servo_control.c , function: _pwm_parameter_assign";
+    const char *TAG = "file: servo_control.c , function: _pwm_config_set_default";
     memset(servo_config, 0, 6 * sizeof(servo_config_t));
 
     servo_config[0].unit = MCPWM_UNIT_0;
@@ -402,6 +407,7 @@ void _servo_param_set_default(servo_handle_t *servo)
     servo->status = SERVO_STATUS_IDLE;
     servo->time_fade = 1000;     // 1000 ms
     servo->lock = mutex_create();
+    servo->nvs_magic = SERVO_NVS_MAGIC;
 }
 
 /*
@@ -415,9 +421,9 @@ static void _servo_run_task(void *arg)
     const char *TAG = "file: servo_control.c , function: _SERVO_RUN_TASK";
 
     servo_config_t *servo_config = (servo_config_t *)malloc(6 * sizeof(servo_config_t));
-    _pwm_parameter_assign(servo_config);
+    _pwm_config_set_default(servo_config);
     // load he so calib neu co
-    ESP_LOGI(TAG, "servo_run_task starting ...");
+    ESP_LOGI(TAG, "servo_run_task start ...");
     while (1) {
 
         event_type_t event_handler;
@@ -461,7 +467,7 @@ void servo_init(void)
 {
     const char *TAG = "file: servo_control.c , function: servo_init";
     servo_config_t *servo_config = (servo_config_t *)malloc(6 * sizeof(servo_config_t));
-    _pwm_parameter_assign(servo_config);
+    _pwm_config_set_default(servo_config);
     // timer 0,  2 channel
 
     mcpwm_config_t pwm_config;
@@ -548,7 +554,7 @@ bool _math_in_workspace(double d, double z, double theta, double r1, double r2, 
 }
 
 // scale argument from math caculation to real argument of servo
-double _math_scale_argument(double arg, double scale, double bias, double under_limit, double upper_limit)
+double _math_scale(double arg, double scale, double bias, double under_limit, double upper_limit)
 {
     double temp = arg * scale + bias;
     if (temp > upper_limit) {
@@ -557,19 +563,6 @@ double _math_scale_argument(double arg, double scale, double bias, double under_
     if (temp < under_limit) {
         return under_limit;
     }
-    return temp;
-}
-
-// calib duty funtion
-double _math_scale_duty(double arg, double scale, double bias, double under_limit, double upper_limit)
-{
-    double temp = arg * scale + bias;
-    // if (temp > upper_limit) {
-    //     return upper_limit;
-    // }
-    // if (temp < under_limit) {
-    //     return under_limit;
-    // }
     return temp;
 }
 /********************************************************************************/
@@ -613,11 +606,11 @@ esp_err_t robot_set_position(double x, double y, double z)
     // convert arguments
     ESP_LOGD(TAG, "argument caculate: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
-    theta[0] = _math_scale_argument(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
-    theta[1] = _math_scale_argument(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
-    theta[2] = _math_scale_argument(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
-    theta[3] = _math_scale_argument(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
-    theta[4] = _math_scale_argument(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
+    theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
+    theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
+    theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
+    theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
+    theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
     ESP_LOGD(TAG, "argument after scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
 
@@ -632,8 +625,8 @@ esp_err_t robot_set_position(double x, double y, double z)
     // calib duty
     int duty_scale[5];
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
-        duty_scale[i] = _math_scale_duty(duty[i], servo_handler.duty_calib[i].scale, servo_handler.duty_calib[i].bias,
-                                         servo_handler.duty_calib[i].under_limit, servo_handler.duty_calib[i].upper_limit);
+        duty_scale[i] = _math_scale(duty[i], servo_handler.duty_calib[i].scale, servo_handler.duty_calib[i].bias,
+                                    servo_handler.duty_calib[i].under_limit, servo_handler.duty_calib[i].upper_limit);
     }
     ESP_LOGD(TAG, "duty after calib: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0], duty[1], duty[2],
              duty[3], duty[4]);
@@ -706,78 +699,75 @@ esp_err_t robot_set_cripper_width(double width)
  */
 static const char *SERVO_NVS = "servo_nvs";
 static esp_storage_handle_t storage_handle = NULL;
-servo_handle_t servo_nvs;
 static int _save_time = 0;
 
 // pack and unpack funtion
 static int _pack_func(void *context, char *buffer, int max_buffer_size)
 {
-    memcpy(buffer, &servo_nvs, sizeof(servo_handle_t));
+    memcpy(buffer, &servo_handler, sizeof(servo_handle_t));
     return sizeof(servo_handle_t);
 }
 
 static esp_err_t _unpack_func(void *context, char *buffer, int loaded_len)
 {
-    memcpy(&servo_nvs, buffer, loaded_len);
+    memcpy(&servo_handler, buffer, loaded_len);
     return ESP_OK;
 }
 
-// esp_err_t nvs_load()
-// {
-//     const char *TAG = "file: servo_control.c , function: nvs_load";
-//     esp_err_t err = nvs_flash_init();
-//     if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
-//         ESP_ERROR_CHECK(nvs_flash_erase());
-//         err = nvs_flash_init();
-//     }
-//     ESP_ERROR_CHECK(err);
-
-//     esp_storage_config_t storage_cfg = {
-//         .namespace = "servo_param",
-//         .buffer_size = 1024,
-//     };
-//     storage_handle = esp_storage_init(&storage_cfg);
-//     esp_storage_add(storage_handle, SERVO_NVS, _unpack_func, _pack_func, NULL);
-
-//     xTaskCreate(nvs_task, "NVS_TASK", 4 * 1024, NULL, 5, NULL);
-
-//     if (esp_storage_load(storage_handle, SERVO_NVS) != ESP_OK) {
-//         cfg_load_default();
-//         return esp_storage_save(storage_handle, SERVO_NVS);
-//     }
-//     ESP_LOGW(TAG, "magic = %d", servo_nvs.magic);
-
-//     if (servo_nvs.magic != CFG_MAGIC) {
-//         cfg_load_default();
-//         return esp_storage_save(storage_handle, SERVO_NVS);
-//     }
-//     return ESP_OK;
-// }
-
-void nvs_save()
+esp_err_t servo_nvs_load(void)
 {
-    if (storage_handle) {
-        esp_storage_save(storage_handle, SERVO_NVS);
+    const char *TAG = "file: servo_control.c , function: servo_nvs_load";
+    ESP_LOGI(TAG, "Flash init ...");
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
     }
-}
+    ESP_ERROR_CHECK(err);
 
-esp_err_t nvs_set_timeout(int timeout_ms)
-{
-    _save_time = timeout_ms / 1000;
+    esp_storage_config_t storage_cfg = {
+        .namespace = "servo_param",
+        .buffer_size = 1024,
+    };
+    storage_handle = esp_storage_init(&storage_cfg);
+    esp_storage_add(storage_handle, SERVO_NVS, _unpack_func, _pack_func, NULL);
+
+    xTaskCreate(_servo_nvs_task, "NVS_TASK", 4 * 1024, NULL, 5, NULL);
+
+    if (esp_storage_load(storage_handle, SERVO_NVS) != ESP_OK) {
+        _servo_param_set_default(&servo_handler);
+        return esp_storage_save(storage_handle, SERVO_NVS);
+    }
+
+    if (servo_handler.nvs_magic != SERVO_NVS_MAGIC) {
+        ESP_LOGW(TAG, "magic = %d", servo_handler.nvs_magic);
+        _servo_param_set_default(&servo_handler);
+        return esp_storage_save(storage_handle, SERVO_NVS);
+    }
     return ESP_OK;
 }
 
-static void nvs_task(void *arg)
+// save param after timeout second
+esp_err_t servo_nvs_save_timeout(int timeout_sec)
+{
+    _save_time = timeout_sec;
+    return ESP_OK;
+}
+
+static void _servo_nvs_task(void *arg)
 {
     const char *TAG = "file: servo_control.c , function: NVS_TASK";
+    ESP_LOGI(TAG, "servo_nvs_task start ...");
     while (1) {
         if (_save_time > 0) {
             _save_time--;
             if (_save_time == 0) {
                 ESP_LOGW(TAG, "saved...");
-                timer_pause(TIMER_GROUP_0, TIMER_0);
-                nvs_save();
-                timer_start(TIMER_GROUP_0, TIMER_0);
+                // timer_pause(TIMER_GROUP_0, TIMER_0);
+                if (storage_handle) {
+                    esp_storage_save(storage_handle, SERVO_NVS);
+                }
+                // timer_start(TIMER_GROUP_0, TIMER_0);
             }
         }
         vTaskDelay(1000 / portTICK_RATE_MS);
