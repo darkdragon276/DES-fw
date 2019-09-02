@@ -39,7 +39,7 @@ static const char *TAG = "ROBOT";
 
 static void uart_task(void *pv)
 {
-
+    ESP_LOGI(TAG, "uart_task starting ...");
     uart_config_t uart_config = {.baud_rate = 115200,
                                  .data_bits = UART_DATA_8_BITS,
                                  .parity = UART_PARITY_DISABLE,
@@ -60,7 +60,6 @@ static void uart_task(void *pv)
             sscanf((const char *)data, "%lf %lf %lf %lf", &x, &y, &z, &width);
             robot_set_cripper_width(width);
             robot_set_position(x, y, z);
-            robot_calib_manual_request();
             ESP_LOGI("UART_TAG", "x: %.1lf, y: %.1lf, z: %.1lf, width: %.1lf", x, y, z,
                      width);
             // echo
@@ -77,7 +76,7 @@ void app_main(void)
 
     servo_nvs_load();
     servo_init();     // start timer and servo run task
-    ESP_LOGI(TAG, "uart_task starting ...");
+
     xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
 }
 
