@@ -23,6 +23,8 @@
 #define SERVO_MAX_CHANNEL (6)
 #define SERVO_TIME_STEP (100)     // 100 ms is timer isr step to caculate
 #define SERVO_NVS_MAGIC (0x270697)
+#define DEFAULT_UPPER_LIMIT (2000)
+#define DEFAULT_UNDER_LIMIT (1000)
 
 #define TIMER_DIVIDER (80)
 #define TIMER_SCALE_SEC (1000000U)
@@ -117,7 +119,6 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel);
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel);
 
 static void _servo_run_task(void *arg);
-static void _servo_nvs_task(void *arg);
 static void _timer_init(bool auto_reload, double timer_interval, const int TIMER_SCALE);
 void IRAM_ATTR _timer_group0_isr(void *para);
 
@@ -126,7 +127,6 @@ void _servo_param_set_default(servo_handle_t *servo);
 void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
-void _servo_set_duty_and_step(int duty, int channel);
 
 // math function
 #define PI acos(-1)
@@ -165,28 +165,29 @@ void _servo_set_time(uint32_t time_fade)
 }
 
 // function set duty for a channel with non-locking
-void _servo_set_duty_and_step(int duty, int channel)
+esp_err_t servo_set_duty_and_step(int duty, int channel)
 {
-    const char *TAG = "file: servo_control.c , function: _servo_set_duty_and_step";
+    const char *TAG = "file: servo_control.c , function: servo_set_duty_and_step";
     if (duty < SERVO_MIN_PULSEWIDTH) {
         ESP_LOGE(TAG, "duty input is short %d < 500us", duty);
-        return;
+        return ESP_ERR_INVALID_ARG;
     } else if (duty > SERVO_MAX_PULSEWIDTH) {
         ESP_LOGE(TAG, "duty input is long %d > 2500us", duty);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     if (channel < 0 && channel > SERVO_MAX_CHANNEL) {
         ESP_LOGE(TAG, "channel %d is not available", channel);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
     servo_handler.channel[channel].duty_target = duty;
-    ESP_LOGD(TAG, "servo %d set duty: %d us ", channel, duty);
+    ESP_LOGE(TAG, "servo %d set duty: %d us ", channel, duty);
 
     servo_handler.channel[channel].step =
         (int)(servo_handler.channel[channel].duty_target - servo_handler.channel[channel].duty_current) /
         (int)(servo_handler.time_fade / SERVO_TIME_STEP);
-    ESP_LOGD(TAG, "step %d is : %d", channel, servo_handler.channel[channel].step);
+    ESP_LOGE(TAG, "step %d is : %d", channel, servo_handler.channel[channel].step);
+    return ESP_OK;
 }
 /*
  *
@@ -594,7 +595,7 @@ esp_err_t robot_set_position(double x, double y, double z)
     // set duty to run servo
     // i = SERVO_CHANNEL_[I]
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
-        _servo_set_duty_and_step(duty[i], i);
+        servo_set_duty_and_step(duty[i], i);
     }
     mutex_unlock(servo_lock);
     return ESP_OK;
@@ -648,7 +649,7 @@ esp_err_t robot_set_cripper_width(double width)
         return ESP_ERR_INVALID_ARG;
     }
     mutex_lock(servo_lock);
-    _servo_set_duty_and_step(duty, SERVO_CHANNEL_5);
+    servo_set_duty_and_step(duty, SERVO_CHANNEL_5);
     ESP_LOGI(TAG, "width set: %.1lf", width);
     mutex_unlock(servo_lock);
     return ESP_OK;
@@ -660,7 +661,6 @@ esp_err_t robot_set_cripper_width(double width)
  */
 static const char *SERVO_NVS = "servo_nvs";
 static esp_storage_handle_t storage_handle = NULL;
-static int _save_time = 0;
 
 // pack and unpack funtion
 static int _pack_func(void *context, char *buffer, int max_buffer_size)
@@ -695,8 +695,6 @@ esp_err_t servo_nvs_load(void)
     storage_handle = esp_storage_init(&storage_cfg);
     esp_storage_add(storage_handle, SERVO_NVS, _unpack_func, _pack_func, NULL);
 
-    xTaskCreate(_servo_nvs_task, "NVS_TASK", 4 * 1024, NULL, 5, NULL);
-
     if (esp_storage_load(storage_handle, SERVO_NVS) != ESP_OK) {
         ESP_LOGW(TAG, "load flash fail, set param default");
         _servo_param_set_default(&servo_handler);
@@ -714,33 +712,39 @@ esp_err_t servo_nvs_load(void)
 // save param after timeout second
 // This function must between timer_stop();
 // and timer_start(); function.
-esp_err_t servo_nvs_save_timeout(int timeout_sec)
+esp_err_t servo_nvs_save(bool option, int channel)
 {
-    _save_time = timeout_sec;
+    const char *TAG = "file: servo_control.c , function: servo_nvs_save";
+    if (option == OPTION_UPPER_LIMIT) {
+        servo_handler.duty_calib[channel].upper_limit = servo_handler.channel[channel].duty_current;
+        ESP_LOGI(TAG, "upper limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_current);
+    } else if (option == OPTION_UNDER_LIMIT) {
+        servo_handler.duty_calib[channel].under_limit = servo_handler.channel[channel].duty_current;
+        ESP_LOGI(TAG, "under limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_current);
+    }
+    if (storage_handle) {
+        esp_storage_save(storage_handle, SERVO_NVS);
+        ESP_LOGI(TAG, "saved ok");
+    }
     return ESP_OK;
 }
 
-static void _servo_nvs_task(void *arg)
+esp_err_t servo_nvs_restore(bool option, int channel)
 {
-    const char *TAG = "file: servo_control.c , function: NVS_TASK";
-    ESP_LOGI(TAG, "servo_nvs_task start ...");
-    while (1) {
-        if (_save_time > 0) {
-            _save_time--;
-            if (_save_time == 0) {
-                ESP_LOGW(TAG, "saved...");
-                // timer_pause(TIMER_GROUP_0, TIMER_0);
-                if (storage_handle) {
-                    esp_storage_save(storage_handle, SERVO_NVS);
-                }
-                // timer_start(TIMER_GROUP_0, TIMER_0);
-            }
-        }
-        vTaskDelay(1000 / portTICK_RATE_MS);
+    const char *TAG = "file: servo_control.c , function: servo_nvs_save";
+    if (option == OPTION_UPPER_LIMIT) {
+        servo_handler.duty_calib[channel].upper_limit = DEFAULT_UPPER_LIMIT;
+        ESP_LOGI(TAG, "upper limit channel[%d] change: %d", channel, DEFAULT_UPPER_LIMIT);
+    } else if (option == OPTION_UNDER_LIMIT) {
+        servo_handler.duty_calib[channel].under_limit = DEFAULT_UNDER_LIMIT;
+        ESP_LOGI(TAG, "under limit channel[%d] change: %d", channel, DEFAULT_UNDER_LIMIT);
     }
-    vTaskDelete(NULL);
+    if (storage_handle) {
+        esp_storage_save(storage_handle, SERVO_NVS);
+        ESP_LOGI(TAG, "saved ok");
+    }
+    return ESP_OK;
 }
-
 /*
  *
  ***************************************** UART pack and unpack function*******************************************

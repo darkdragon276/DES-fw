@@ -46,24 +46,85 @@ static void uart_task(void *pv)
                                  .stop_bits = UART_STOP_BITS_1,
                                  .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
     uart_param_config(UART_NUM, &uart_config);
-    uart_set_pin(UART_NUM, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM,
-                 UART_CTS_PINNUM);
+    uart_set_pin(UART_NUM, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM, UART_CTS_PINNUM);
     uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
     char *data = (char *)malloc(BUF_SIZE);
-    double x, y, z, width;
     while (1) {
-        // Read data from the UART
-        int len =
-            uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS);
-        // Write data back to the UART
-        if (len != 0) {
-            sscanf((const char *)data, "%lf %lf %lf %lf", &x, &y, &z, &width);
-            robot_set_cripper_width(width);
-            robot_set_position(x, y, z);
-            ESP_LOGI("UART_TAG", "x: %.1lf, y: %.1lf, z: %.1lf, width: %.1lf", x, y, z,
-                     width);
-            // echo
-            uart_write_bytes(UART_NUM, (const char *)data, len);
+        memset(data, 0, BUF_SIZE);
+        if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS) >= 0) {
+            ESP_LOGI(TAG, "%s", data);
+
+            if (strcmp(data, "AT POS") == 0) {
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                    ESP_LOGI(TAG, "%s", data);
+
+                    double x, y, z;
+                    sscanf(data, "%lf %lf %lf", &x, &y, &z);
+                    robot_set_position(x, y, z);
+
+                    ESP_LOGI(TAG, "AT OK");
+                } else {
+                    ESP_LOGE(TAG, "AT POS: time out");
+                }
+
+            } else if (strcmp(data, "AT WIDTH") == 0) {
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                    ESP_LOGI(TAG, "%s", data);
+
+                    double width;
+                    sscanf(data, "%lf", &width);
+                    robot_set_cripper_width(width);
+
+                    ESP_LOGI(TAG, "AT OK");
+                } else {
+                    ESP_LOGE(TAG, "AT WIDTH: time out");
+                }
+            } else if (strcmp(data, "AT DUTY") == 0) {
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                    ESP_LOGI(TAG, "%s", data);
+
+                    int duty, channel;
+                    sscanf(data, "%d %d", &duty, &channel);
+                    servo_set_duty_and_step(duty, channel);
+
+                    ESP_LOGI(TAG, "AT OK");
+                } else {
+                    ESP_LOGE(TAG, "AT DUTY: time out");
+                }
+
+            } else if (strcmp(data, "AT SAVE") == 0) {
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                    ESP_LOGI(TAG, "%s", data);
+
+                    int channel;
+                    char comment[10];
+                    sscanf(data, "%s %d", comment, &channel);
+                    if (strcmp(comment, "UPPER") == 0) {
+                        servo_nvs_save(OPTION_UPPER_LIMIT, channel);
+                    } else if (strcmp(comment, "UNDER") == 0) {
+                        servo_nvs_save(OPTION_UNDER_LIMIT, channel);
+                    }
+                    ESP_LOGI(TAG, "AT OK");
+                } else {
+                    ESP_LOGE(TAG, "AT SAVE: time out");
+                }
+            } else if (strcmp(data, "AT REST") == 0) {
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                    ESP_LOGI(TAG, "%s", data);
+
+                    int channel;
+                    char comment[10];
+                    sscanf(data, "%s %d", comment, &channel);
+                    if (strcmp(comment, "UPPER") == 0) {
+                        servo_nvs_save(OPTION_UPPER_LIMIT, channel);
+                    } else if (strcmp(comment, "UNDER") == 0) {
+                        servo_nvs_save(OPTION_UNDER_LIMIT, channel);
+                    }
+                    ESP_LOGI(TAG, "AT OK");
+                } else {
+                    ESP_LOGE(TAG, "AT REST: time out");
+                }
+            }
         }
         vTaskDelay(10 / portTICK_RATE_MS);
     }
@@ -81,16 +142,16 @@ void app_main(void)
 }
 
 // test case uart slip
-    // char data[4] = {0x30, 0x40, 0x7D, 0x7F};
+// char data[4] = {0x30, 0x40, 0x7D, 0x7F};
 
-    // char *package = (char *)malloc(2 * sizeof(char));
-    // int pkg_len = msg_pack(data, 4, package);
-    // for (int i = 0; i < pkg_len; i++) {
-    //     ESP_LOGI("debug", "pkg[%d]: %X ", i, package[i]);
-    // }
+// char *package = (char *)malloc(2 * sizeof(char));
+// int pkg_len = msg_pack(data, 4, package);
+// for (int i = 0; i < pkg_len; i++) {
+//     ESP_LOGI("debug", "pkg[%d]: %X ", i, package[i]);
+// }
 
-    // char *buff = (char *)malloc(2 * sizeof(char));
-    // int buff_len = msg_unpack(package, pkg_len, buff);
-    // for (int i = 0; i < buff_len; i++) {
-    //     ESP_LOGI("debug", "buff[%d]: %X ", i, buff[i]);
-    // }
+// char *buff = (char *)malloc(2 * sizeof(char));
+// int buff_len = msg_unpack(package, pkg_len, buff);
+// for (int i = 0; i < buff_len; i++) {
+//     ESP_LOGI("debug", "buff[%d]: %X ", i, buff[i]);
+// }

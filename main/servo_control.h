@@ -6,9 +6,9 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -25,6 +25,8 @@
 #include "esp_log.h"
 #include "esp_storage.h"
 
+#define OPTION_UPPER_LIMIT (1)
+#define OPTION_UNDER_LIMIT (0)
 extern uint32_t servo_time;
 
 void servo_init(void);
@@ -34,7 +36,7 @@ void servo_set_all_duty_with_time(int *duty, uint32_t time);
 
 esp_err_t robot_set_position(double x, double y, double z);
 esp_err_t robot_set_cripper_width(double width);
-
+esp_err_t servo_set_duty_and_step(int duty, int channel);
 // UART
 int msg_unpack(char *pkg, int pkg_len, char *buffer);
 int msg_pack(char *buff, int buff_len, char *package);
@@ -42,8 +44,7 @@ int msg_pack(char *buff, int buff_len, char *package);
 // init and load data default if can't
 // find its in flash
 esp_err_t servo_nvs_load(void);
-
-// set timeout for save parameter to flash
-esp_err_t servo_nvs_save_timeout(int timeout_sec);
+esp_err_t servo_nvs_save(bool option, int channel);
+esp_err_t servo_nvs_restore(bool option, int channel);
 
 #endif
