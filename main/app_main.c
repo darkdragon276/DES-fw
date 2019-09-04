@@ -48,14 +48,15 @@ static void uart_task(void *pv)
     uart_param_config(UART_NUM, &uart_config);
     uart_set_pin(UART_NUM, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM, UART_CTS_PINNUM);
     uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
-    char *data = (char *)malloc(BUF_SIZE);
+    char *data = (char *)calloc(BUF_SIZE, sizeof(char));
     while (1) {
         memset(data, 0, BUF_SIZE);
-        if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS) >= 0) {
+        if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS) != 0) {
             ESP_LOGI(TAG, "%s", data);
 
             if (strcmp(data, "AT POS") == 0) {
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                memset(data, 0, BUF_SIZE);
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
                     ESP_LOGI(TAG, "%s", data);
 
                     double x, y, z;
@@ -68,7 +69,8 @@ static void uart_task(void *pv)
                 }
 
             } else if (strcmp(data, "AT WIDTH") == 0) {
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                memset(data, 0, BUF_SIZE);
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
                     ESP_LOGI(TAG, "%s", data);
 
                     double width;
@@ -80,7 +82,8 @@ static void uart_task(void *pv)
                     ESP_LOGE(TAG, "AT WIDTH: time out");
                 }
             } else if (strcmp(data, "AT DUTY") == 0) {
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                memset(data, 0, BUF_SIZE);
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
                     ESP_LOGI(TAG, "%s", data);
 
                     int duty, channel;
@@ -93,7 +96,8 @@ static void uart_task(void *pv)
                 }
 
             } else if (strcmp(data, "AT SAVE") == 0) {
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                memset(data, 0, BUF_SIZE);
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
                     ESP_LOGI(TAG, "%s", data);
 
                     int channel;
@@ -109,7 +113,8 @@ static void uart_task(void *pv)
                     ESP_LOGE(TAG, "AT SAVE: time out");
                 }
             } else if (strcmp(data, "AT REST") == 0) {
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 3000 / portTICK_RATE_MS) >= 0) {
+                memset(data, 0, BUF_SIZE);
+                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
                     ESP_LOGI(TAG, "%s", data);
 
                     int channel;
@@ -124,9 +129,12 @@ static void uart_task(void *pv)
                 } else {
                     ESP_LOGE(TAG, "AT REST: time out");
                 }
+            } else {
+                ESP_LOGI(TAG, "COMMENT IS NON-AVAILABLE");
             }
+
+            vTaskDelay(10 / portTICK_RATE_MS);
         }
-        vTaskDelay(10 / portTICK_RATE_MS);
     }
 }
 
@@ -135,10 +143,9 @@ void app_main(void)
     esp_log_level_set("*", ESP_LOG_INFO);
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
 
-    servo_nvs_load();
     servo_init();     // start timer and servo run task
 
-    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 5, NULL);
+    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 6, NULL);
 }
 
 // test case uart slip

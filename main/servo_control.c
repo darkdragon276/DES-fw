@@ -21,7 +21,7 @@
 #define SERVO_CHANNEL_5 (5)
 
 #define SERVO_MAX_CHANNEL (6)
-#define SERVO_TIME_STEP (100)     // 100 ms is timer isr step to caculate
+#define SERVO_TIME_STEP (20)     // 100 ms is timer isr step to caculate
 #define SERVO_NVS_MAGIC (0x270697)
 #define DEFAULT_UPPER_LIMIT (2000)
 #define DEFAULT_UNDER_LIMIT (1000)
@@ -106,7 +106,7 @@ typedef struct {
 
 static SemaphoreHandle_t servo_lock;
 static servo_handle_t servo_handler;
-static servo_config_t *servo_config_pv;
+static servo_config_t servo_config_pv[6];
 xQueueHandle event_queue;
 
 /*
@@ -181,12 +181,12 @@ esp_err_t servo_set_duty_and_step(int duty, int channel)
         return ESP_ERR_INVALID_ARG;
     }
     servo_handler.channel[channel].duty_target = duty;
-    ESP_LOGE(TAG, "servo %d set duty: %d us ", channel, duty);
+    ESP_LOGI(TAG, "servo %d set duty: %d us ", channel, duty);
 
     servo_handler.channel[channel].step =
         (int)(servo_handler.channel[channel].duty_target - servo_handler.channel[channel].duty_current) /
         (int)(servo_handler.time_fade / SERVO_TIME_STEP);
-    ESP_LOGE(TAG, "step %d is : %d", channel, servo_handler.channel[channel].step);
+    ESP_LOGI(TAG, "step %d is : %d", channel, servo_handler.channel[channel].step);
     return ESP_OK;
 }
 /*
@@ -203,9 +203,14 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
                  (int)servo_channel->duty_target);
         return SERVO_STATUS_ERROR;
     }
-    if (abs(servo_channel->duty_current - servo_channel->duty_target) <= abs(servo_channel->step) ||
-        servo_channel->step == 0) {
+    int sub_duty = abs(servo_channel->duty_current - servo_channel->duty_target);
+    int step = abs(servo_channel->step);
+    ESP_LOGD(TAG, "sub duty: %d , step: %d", sub_duty, step);
+    if (sub_duty < step || step == 0) {
         servo_channel->status = SERVO_STATUS_IDLE;
+        servo_channel->duty_current = servo_channel->duty_target;
+        servo_channel->step = 0;
+        ESP_LOGD(TAG, "CHANNEL SERVO IS IDLE");
         return SERVO_STATUS_IDLE;
     }
     return SERVO_STATUS_RUNNING;
@@ -263,19 +268,24 @@ void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config)
         ESP_ERROR_CHECK(mcpwm_set_duty_in_us(servo_config[i].unit, servo_config[i].timer, servo_config[i].op,
                                              servo->channel[i].duty_current));
     }
-    ESP_LOGD(TAG, "pulse out for all channel");
+    ESP_LOGD(TAG, "%d     %d     %d     %d     %d", servo->channel[0].duty_current, servo->channel[1].duty_current,
+             servo->channel[2].duty_current, servo->channel[3].duty_current, servo->channel[4].duty_current);
+    ESP_LOGD(TAG, "%d     %d     %d     %d     %d", servo->channel[0].duty_target, servo->channel[1].duty_target,
+             servo->channel[2].duty_target, servo->channel[3].duty_target, servo->channel[4].duty_target);
 }
 
 // add step per cycle
 void _servo_duty_add_step(servo_handle_t *servo)
 {
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-        servo->channel[i].duty_current += servo->channel[i].step;
-        if (servo->channel[i].duty_current < SERVO_MIN_PULSEWIDTH) {
-            servo->channel[i].duty_current = SERVO_MIN_PULSEWIDTH;
-        }
-        if (servo->channel[i].duty_current > SERVO_MAX_PULSEWIDTH) {
-            servo->channel[i].duty_current = SERVO_MAX_PULSEWIDTH;
+        if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_RUNNING) {
+            servo->channel[i].duty_current += servo->channel[i].step;
+            if (servo->channel[i].duty_current < SERVO_MIN_PULSEWIDTH) {
+                servo->channel[i].duty_current = SERVO_MIN_PULSEWIDTH;
+            }
+            if (servo->channel[i].duty_current > SERVO_MAX_PULSEWIDTH) {
+                servo->channel[i].duty_current = SERVO_MAX_PULSEWIDTH;
+            }
         }
     }
 }
@@ -397,7 +407,7 @@ void _servo_param_set_default(servo_handle_t *servo)
         servo->duty_calib[i].upper_limit = 2000;
     }
     servo->status = SERVO_STATUS_IDLE;
-    servo->time_fade = 1000;     // 1000 ms
+    servo->time_fade = 5000;     // 1000 ms
     servo->nvs_magic = SERVO_NVS_MAGIC;
 }
 /*
@@ -418,7 +428,9 @@ static void _servo_run_task(void *arg)
                 for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
                     _servo_channel_check_duty_error(&servo_handler.channel[i]);
                 }
-                _servo_duty_add_step(&servo_handler);
+                if (_servo_check_status(&servo_handler) == SERVO_STATUS_RUNNING) {
+                    _servo_duty_add_step(&servo_handler);
+                }
                 _servo_mcpwm_out(&servo_handler, servo_config_pv);
                 mutex_unlock(servo_lock);
             }
@@ -433,7 +445,7 @@ static void _servo_run_task(void *arg)
 void servo_init(void)
 {
     const char *TAG = "file: servo_control.c , function: servo_init";
-    servo_config_t *servo_config_pv = (servo_config_t *)calloc(6, sizeof(servo_config_t));
+    // servo_config_t *servo_config_pv = (servo_config_t *)calloc(6, sizeof(servo_config_t));
     _pwm_config_default(servo_config_pv);
     // timer 0,  2 channel
 
@@ -456,6 +468,7 @@ void servo_init(void)
     _timer_init(TIMER_AUTO_RELOAD, SERVO_TIME_STEP, TIMER_SCALE_MS);
     event_queue = xQueueCreate(20, sizeof(event_type_t));
     servo_lock = mutex_create();
+    servo_nvs_load();
     xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
 }
 
@@ -706,6 +719,10 @@ esp_err_t servo_nvs_load(void)
         _servo_param_set_default(&servo_handler);
         return esp_storage_save(storage_handle, SERVO_NVS);
     }
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        ESP_LOGI(TAG, "servo limit: channel[%d].upper_limit: %lf", i, servo_handler.duty_calib[i].upper_limit);
+        ESP_LOGI(TAG, "servo limit: channel[%d].under_limit: %lf", i, servo_handler.duty_calib[i].under_limit);
+    }
     return ESP_OK;
 }
 
@@ -716,11 +733,11 @@ esp_err_t servo_nvs_save(bool option, int channel)
 {
     const char *TAG = "file: servo_control.c , function: servo_nvs_save";
     if (option == OPTION_UPPER_LIMIT) {
-        servo_handler.duty_calib[channel].upper_limit = servo_handler.channel[channel].duty_current;
-        ESP_LOGI(TAG, "upper limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_current);
+        servo_handler.duty_calib[channel].upper_limit = (double)servo_handler.channel[channel].duty_target;
+        ESP_LOGI(TAG, "upper limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_target);
     } else if (option == OPTION_UNDER_LIMIT) {
-        servo_handler.duty_calib[channel].under_limit = servo_handler.channel[channel].duty_current;
-        ESP_LOGI(TAG, "under limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_current);
+        servo_handler.duty_calib[channel].under_limit = (double)servo_handler.channel[channel].duty_target;
+        ESP_LOGI(TAG, "under limit channel[%d] change: %d", channel, servo_handler.channel[channel].duty_target);
     }
     if (storage_handle) {
         esp_storage_save(storage_handle, SERVO_NVS);
