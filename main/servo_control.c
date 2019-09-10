@@ -21,7 +21,7 @@
 #define SERVO_CHANNEL_5 (5)
 
 #define SERVO_MAX_CHANNEL (6)
-#define SERVO_TIME_STEP (20)     // 100 ms is timer isr step to caculate
+#define SERVO_TIME_STEP (20)     // 20 ms is timer isr step to caculate
 #define SERVO_NVS_MAGIC (0x270697)
 #define DEFAULT_UPPER_LIMIT (2000)
 #define DEFAULT_UNDER_LIMIT (1000)
@@ -32,6 +32,8 @@
 #define TIMER_SCALE_US (1U)
 #define TIMER_CLEAR (1)
 #define TIMER_AUTO_RELOAD (1)
+
+#define NVS_SAVE_TIME (3000)     //  60 second per save
 
 #define EVENT_ID_BASE (0x11)
 
@@ -54,7 +56,7 @@
 
 typedef enum {
     EVENT_TIMER_SERVO = EVENT_ID_BASE,
-    EVENT_CALIB_AUTO,
+    EVENT_NVS_SAVE,
 } event_type_t;
 
 typedef enum {
@@ -107,6 +109,8 @@ typedef struct {
 static SemaphoreHandle_t servo_lock;
 static servo_handle_t servo_handler;
 static servo_config_t servo_config_pv[6];
+static esp_storage_handle_t storage_handle = NULL;
+static int nvs_time_save = 0;
 xQueueHandle event_queue;
 
 /*
@@ -127,6 +131,7 @@ void _servo_param_set_default(servo_handle_t *servo);
 void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
 
 void _servo_set_time(uint32_t time_fade);
+esp_err_t _servo_nvs_save_all(void);
 
 // math function
 #define PI acos(-1)
@@ -303,6 +308,11 @@ void IRAM_ATTR _timer_group0_isr(void *para)
     event_type_t event_handler = EVENT_TIMER_SERVO;
     xQueueSendFromISR(event_queue, &event_handler, NULL);
     TIMERG0.hw_timer[0].config.alarm_en = TIMER_ALARM_EN;
+    if (nvs_time_save-- == 0) {
+        nvs_time_save = NVS_SAVE_TIME;
+        event_handler = EVENT_NVS_SAVE;
+        xQueueSendFromISR(event_queue, &event_handler, NULL);
+    }
 }
 
 static void _timer_init(bool auto_reload, double timer_interval, const int TIMER_SCALE)
@@ -433,6 +443,8 @@ static void _servo_run_task(void *arg)
                 }
                 _servo_mcpwm_out(&servo_handler, servo_config_pv);
                 mutex_unlock(servo_lock);
+            } else if (event_handler == EVENT_NVS_SAVE) {
+                _servo_nvs_save_all();
             }
         }
         vTaskDelay(1 / portTICK_RATE_MS);
@@ -465,6 +477,7 @@ void servo_init(void)
 
     ESP_LOGI(TAG, "servo 6 channels config:  OK");
 
+    nvs_time_save = NVS_SAVE_TIME;
     _timer_init(TIMER_AUTO_RELOAD, SERVO_TIME_STEP, TIMER_SCALE_MS);
     event_queue = xQueueCreate(20, sizeof(event_type_t));
     servo_lock = mutex_create();
@@ -673,8 +686,6 @@ esp_err_t robot_set_cripper_width(double width)
  *
  */
 static const char *SERVO_NVS = "servo_nvs";
-static esp_storage_handle_t storage_handle = NULL;
-
 // pack and unpack funtion
 static int _pack_func(void *context, char *buffer, int max_buffer_size)
 {
@@ -727,8 +738,18 @@ esp_err_t servo_nvs_load(void)
 }
 
 // save param after timeout second
-// This function must between timer_stop();
-// and timer_start(); function.
+esp_err_t _servo_nvs_save_all(void)
+{
+    const char *TAG = "file: servo_control.c , function: _servo_nvs_save_all";
+    if (storage_handle) {
+        esp_storage_save(storage_handle, SERVO_NVS);
+        ESP_LOGI(TAG, "saved ok");
+        return ESP_OK;
+    }
+    ESP_LOGE(TAG, "save error");
+    return ESP_ERR_FLASH_NOT_INITIALISED;
+}
+//
 esp_err_t servo_nvs_save(bool option, int channel)
 {
     const char *TAG = "file: servo_control.c , function: servo_nvs_save";
