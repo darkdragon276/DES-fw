@@ -88,7 +88,7 @@ static void uart_task(void *pv)
 
                     int duty, channel;
                     sscanf(data, "%d %d", &duty, &channel);
-                    servo_set_duty_and_step(duty, channel);
+                    servo_duty_set_lspb_calc(duty, channel);
 
                     ESP_LOGI(TAG, "AT OK");
                 } else {
@@ -120,11 +120,12 @@ static void uart_task(void *pv)
                     int channel;
                     char comment[10];
                     sscanf(data, "%s %d", comment, &channel);
-                    if (strcmp(comment, "UPPER") == 0) {
-                        servo_nvs_save(OPTION_UPPER_LIMIT, channel);
-                    } else if (strcmp(comment, "UNDER") == 0) {
-                        servo_nvs_save(OPTION_UNDER_LIMIT, channel);
-                    }
+                    // if (strcmp(comment, "UPPER") == 0) {
+                    //     servo_nvs_save(OPTION_UPPER_LIMIT, channel);
+                    // } else if (strcmp(comment, "UNDER") == 0) {
+                    //     servo_nvs_save(OPTION_UNDER_LIMIT, channel);
+                    // }
+                    servo_nvs_default();
                     ESP_LOGI(TAG, "AT OK");
                 } else {
                     ESP_LOGE(TAG, "AT REST: time out");
