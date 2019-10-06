@@ -35,7 +35,61 @@ static const char *TAG = "ROBOT";
 #define UART_CTS_PINNUM (18)     // UART_PIN_NO_CHANGE
 #define UART_NUM UART_NUM_1
 
-#define BUF_SIZE (1024)
+#define BUF_SIZE (100)
+
+typedef enum {
+    IDLE = 0,
+    SET_POS,
+    SET_WID,
+    SET_HOME,
+    SET_DUTY,
+    SAVE,
+} robot_mode_t;
+
+static robot_mode_t mode = IDLE;
+robot_mode_t robot_read_command(int *id_command, char *para)
+{
+    char data[BUF_SIZE];
+    char command[10];
+    char buff[BUF_SIZE];
+    int data_len = uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 5 / portTICK_RATE_MS);
+    if (data_len != 0) {
+        if (buff == NULL) {
+            return IDLE;
+        }
+        msg_unpack(data, data_len, buff);
+        if (buff == NULL) {
+            ESP_LOGE(TAG, "buff input is null");
+            return;
+        }
+        sscanf(buff, "%d %s %s", id_command, command, para);
+        if (strcmp(command, "SETPOS") == 0) {
+            return SET_POS;
+        } else if (strcmp(command, "SETWID") == 0) {
+            return SET_WID;
+        } else if (strcmp(command, "SETHOME") == 0) {
+            return SET_HOME;
+        } else if (strcmp(command, "SETDUTY") == 0) {
+            return SET_DUTY;
+        } else if (strcmp(command, "SAVE") == 0) {
+            return SAVE;
+        } else {
+            ESP_LOGI(TAG, "error command %s", command);
+        }
+    }
+    return IDLE;
+}
+
+void robot_respose(int id_command, char *message)
+{
+    char *buff = (char *)calloc(BUF_SIZE, sizeof(char));
+    int buff_len = snprintf(buff, BUF_SIZE, "%d:%s", id_command, message);
+    char *temp = (char *)calloc(100, sizeof(char));
+    int temp_len = msg_pack(buff, buff_len, temp);
+    uart_write_bytes(UART_NUM, temp, temp_len);
+    free(temp);
+    free(buff);
+}
 
 static void uart_task(void *pv)
 {
@@ -48,94 +102,50 @@ static void uart_task(void *pv)
     uart_param_config(UART_NUM, &uart_config);
     uart_set_pin(UART_NUM, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM, UART_CTS_PINNUM);
     uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
-    char *data = (char *)calloc(BUF_SIZE, sizeof(char));
+    int id_command = 0;
+    static char para[50];
+    double x, y, z, width;
+    int duty, channel;
     while (1) {
-        memset(data, 0, BUF_SIZE);
-        if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 20 / portTICK_RATE_MS) != 0) {
-            ESP_LOGI(TAG, "%s", data);
-
-            if (strcmp(data, "AT POS") == 0) {
-                memset(data, 0, BUF_SIZE);
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
-                    ESP_LOGI(TAG, "%s", data);
-
-                    double x, y, z;
-                    sscanf(data, "%lf %lf %lf", &x, &y, &z);
-                    robot_set_position(x, y, z);
-
-                    ESP_LOGI(TAG, "AT OK");
-                } else {
-                    ESP_LOGE(TAG, "AT POS: time out");
-                }
-
-            } else if (strcmp(data, "AT WIDTH") == 0) {
-                memset(data, 0, BUF_SIZE);
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
-                    ESP_LOGI(TAG, "%s", data);
-
-                    double width;
-                    sscanf(data, "%lf", &width);
-                    robot_set_cripper_width(width);
-
-                    ESP_LOGI(TAG, "AT OK");
-                } else {
-                    ESP_LOGE(TAG, "AT WIDTH: time out");
-                }
-            } else if (strcmp(data, "AT DUTY") == 0) {
-                memset(data, 0, BUF_SIZE);
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
-                    ESP_LOGI(TAG, "%s", data);
-
-                    int duty, channel;
-                    sscanf(data, "%d %d", &duty, &channel);
-                    servo_duty_set_lspb_calc(duty, channel);
-
-                    ESP_LOGI(TAG, "AT OK");
-                } else {
-                    ESP_LOGE(TAG, "AT DUTY: time out");
-                }
-
-            } else if (strcmp(data, "AT SAVE") == 0) {
-                memset(data, 0, BUF_SIZE);
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
-                    ESP_LOGI(TAG, "%s", data);
-
-                    int channel;
-                    char comment[10];
-                    sscanf(data, "%s %d", comment, &channel);
-                    if (strcmp(comment, "UPPER") == 0) {
-                        servo_nvs_save(OPTION_UPPER_LIMIT, channel);
-                    } else if (strcmp(comment, "UNDER") == 0) {
-                        servo_nvs_save(OPTION_UNDER_LIMIT, channel);
-                    }
-                    ESP_LOGI(TAG, "AT OK");
-                } else {
-                    ESP_LOGE(TAG, "AT SAVE: time out");
-                }
-            } else if (strcmp(data, "AT REST") == 0) {
-                memset(data, 0, BUF_SIZE);
-                if (uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 10000 / portTICK_RATE_MS) != 0) {
-                    ESP_LOGI(TAG, "%s", data);
-
-                    int channel;
-                    char comment[10];
-                    sscanf(data, "%s %d", comment, &channel);
-                    // if (strcmp(comment, "UPPER") == 0) {
-                    //     servo_nvs_save(OPTION_UPPER_LIMIT, channel);
-                    // } else if (strcmp(comment, "UNDER") == 0) {
-                    //     servo_nvs_save(OPTION_UNDER_LIMIT, channel);
-                    // }
-                    servo_nvs_default();
-                    ESP_LOGI(TAG, "AT OK");
-                } else {
-                    ESP_LOGE(TAG, "AT REST: time out");
-                }
-            } else {
-                ESP_LOGI(TAG, "COMMENT IS NON-AVAILABLE");
-            }
-
-            vTaskDelay(10 / portTICK_RATE_MS);
+        mode = robot_read_command(&id_command, para);
+        switch (mode) {
+        case IDLE:
+            break;
+        case SET_POS:
+            ESP_LOGI("debug", "line 135");
+            sscanf(para, "%lf, %lf, %lf", &x, &y, &z);
+            ESP_LOGI("debug", "line 136");
+            robot_set_position(x, y, z);
+            ESP_LOGI("debug", "line 138");
+            robot_respose(id_command, "OK");
+            mode = IDLE;
+            break;
+        case SET_WID:
+            sscanf(para, "%lf", &width);
+            robot_set_cripper_width(width);
+            robot_respose(id_command, "OK");
+            mode = IDLE;
+            break;
+        case SET_HOME:
+            // robot_set_home();
+            robot_respose(id_command, "OK");
+            mode = IDLE;
+            break;
+        case SET_DUTY:
+            sscanf(para, "%d, %d", &duty, &channel);
+            servo_duty_set_lspb_calc(duty, channel);
+            robot_respose(id_command, "OK");
+            mode = IDLE;
+            break;
+        case SAVE:
+            // robot_save();
+            robot_respose(id_command, "OK");
+            mode = IDLE;
+            break;
+        default:
+            break;
         }
+        vTaskDelay(1 / portTICK_RATE_MS);
     }
 }
 
@@ -146,20 +156,5 @@ void app_main(void)
 
     servo_init();     // start timer and servo run task
 
-    xTaskCreate(uart_task, "UART-TASK", 4096, NULL, 6, NULL);
+    xTaskCreate(uart_task, "UART-TASK", 8 * 1024, NULL, 6, NULL);
 }
-
-// test case uart slip
-// char data[4] = {0x30, 0x40, 0x7D, 0x7F};
-
-// char *package = (char *)malloc(2 * sizeof(char));
-// int pkg_len = msg_pack(data, 4, package);
-// for (int i = 0; i < pkg_len; i++) {
-//     ESP_LOGI("debug", "pkg[%d]: %X ", i, package[i]);
-// }
-
-// char *buff = (char *)malloc(2 * sizeof(char));
-// int buff_len = msg_unpack(package, pkg_len, buff);
-// for (int i = 0; i < buff_len; i++) {
-//     ESP_LOGI("debug", "buff[%d]: %X ", i, buff[i]);
-// }

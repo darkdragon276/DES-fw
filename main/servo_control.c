@@ -527,7 +527,7 @@ static void _servo_run_task(void *arg)
                 _servo_mcpwm_out(&servo_handler, servo_config_pv);
                 mutex_unlock(servo_lock);
             } else if (event_handler == EVENT_NVS_SAVE) {
-                _servo_nvs_save_all();
+                // _servo_nvs_save_all();
             }
         }
         vTaskDelay(1 / portTICK_RATE_MS);
@@ -926,7 +926,7 @@ int msg_pack(char *buff, int buff_len, char *package)
     }
     pkg[pkg_len++] = 0x7F;
 
-    memcpy(package, pkg, pkg_len);
+    memmove(package, pkg, pkg_len);
     free(pkg);
     // mutex_unlock(servo_lock);
 
@@ -963,7 +963,6 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer)
         }
     }
     char *buff = (char *)malloc(buff_len * sizeof(char));
-
     // unpacking
     buff_len = 0;
     for (uint32_t i = 1; i < pkg_len - 1; i++) {
@@ -977,7 +976,7 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer)
         }
     }
 
-    memcpy(buffer, buff, buff_len);
+    memmove(buffer, buff, buff_len);
     free(buff);
     // mutex_lock(servo_handler.unlock);
 
