@@ -59,12 +59,6 @@ typedef enum {
     EVENT_NVS_SAVE,
 } event_type_t;
 
-typedef enum {
-    SERVO_STATUS_ERROR = -1,
-    SERVO_STATUS_IDLE,
-    SERVO_STATUS_RUNNING,
-} servo_status_t;
-
 /*
  *
  ****************STRUCT DECLARE*******************
@@ -184,7 +178,7 @@ void _math_lspb_vector_calc(int current_duty, int target_duty, int time_full, in
                             math_lspb_vector_t *lspb_vector)
 {
     const char *TAG = "file: servo_control.c , function: _math_lspb_vector_calc";
-    ESP_LOGI(TAG, "path planning calculating");
+    ESP_LOGD(TAG, "path planning calculating");
     double tf_ = (double)time_full / SERVO_TIME_STEP;
     double tb_ = (double)time_balance / SERVO_TIME_STEP;
     double P0_ = (double)current_duty;
@@ -204,7 +198,7 @@ void _math_lspb_vector_calc(int current_duty, int target_duty, int time_full, in
     lspb_vector->Pf = Pf_;
     lspb_vector->tf = (int)tf_;
     lspb_vector->tb = (int)tb_;
-    ESP_LOGI(TAG, "a: %.1lf, P0: %.0lf, Pf: %.0lf, tf: %d, tb: %d", lspb_vector->a, lspb_vector->P0, lspb_vector->Pf,
+    ESP_LOGD(TAG, "a: %.1lf, P0: %.0lf, Pf: %.0lf, tf: %d, tb: %d", lspb_vector->a, lspb_vector->P0, lspb_vector->Pf,
              lspb_vector->tf, lspb_vector->tb);
 }
 
@@ -214,7 +208,7 @@ int _math_path_planning(double a, double P0, double Pf, int *time_count, int tf,
     const char *TAG = "file: servo_control.c , function: _math_path_planning";
     ESP_LOGD(TAG, "path planning caculate");
     if (a == 0) {
-        ESP_LOGE(TAG, "error input: a = %.2lf", a);
+        ESP_LOGW(TAG, "warning input: a = %.2lf", a);
         return (int)P0;     // stop
     }
 
@@ -251,7 +245,7 @@ esp_err_t servo_duty_set_lspb_calc(int duty, int channel)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (channel < 0 && channel > SERVO_MAX_CHANNEL) {
+    if (channel < 0 || channel > SERVO_MAX_CHANNEL) {
         ESP_LOGE(TAG, "channel %d is not available", channel);
         return ESP_ERR_INVALID_ARG;
     }
@@ -324,6 +318,10 @@ void _servo_set_duty(servo_handle_t *servo)
     } else {
         servo->status = SERVO_STATUS_IDLE;
     }
+}
+
+servo_status_t robot_get_status() {
+    return servo_handler.status;
 }
 
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel)
@@ -473,7 +471,7 @@ void _pwm_config_default(servo_config_t *servo_config)
 void _servo_param_set_default(servo_handle_t *servo)
 {
     memset(servo, 0, sizeof(servo_handle_t));
-    int home[6] = {1500, 1000, 2000, 2000, 1500, 1500};
+    int home[6] = {1500, 1050, 1980, 2100, 1500, 1500};
     int upper[5] = {1970, 2100, 1980, 2100, 2000};
     int under[5] = {920, 1050, 870, 980, 1000};
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
@@ -685,14 +683,14 @@ esp_err_t robot_set_position(double x, double y, double z)
     theta[4] = 45;
 
     // convert arguments
-    ESP_LOGI(TAG, "caculate:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGD(TAG, "caculate:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
     theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
     theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
     theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
     theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
     theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
-    ESP_LOGI(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
 
     // convert to duty
@@ -700,7 +698,7 @@ esp_err_t robot_set_position(double x, double y, double z)
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
         duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
     }
-    ESP_LOGI(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+    ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
              duty[1], duty[2], duty[3], duty[4]);
 
     // set duty to run servo
@@ -710,6 +708,14 @@ esp_err_t robot_set_position(double x, double y, double z)
     }
     // set time to zero
     mutex_unlock(servo_lock);
+    return ESP_OK;
+}
+
+esp_err_t robot_set_home() {
+    int home[5] = {1500, 1050, 1980, 2100, 1500};
+    for(int i = 0; i < SERVO_MAX_CHANNEL - 1; i ++) {
+        servo_duty_set_lspb_calc(home[i], i);
+    }
     return ESP_OK;
 }
 
@@ -935,16 +941,12 @@ int msg_pack(char *buff, int buff_len, char *package)
 
 // this function unpack your package to buffer lead by buff pointer
 // this function can't check pkg_len vs sizeof(pkg)
-int msg_unpack(char *pkg, int pkg_len, char *buffer)
+int msg_unpack(char *pkg, int pkg_len)
 {
     const char *TAG = "file: servo_control.c , function: msg_unpack";
     // check lenght
     if (pkg_len < MSG_MIN_PKG_LEN) {
         ESP_LOGE(TAG, "package_len: %d < %d", pkg_len, MSG_MIN_PKG_LEN);
-        return 0;
-    }
-    if (buffer == NULL) {
-        ESP_LOGE(TAG, "input buffer is null pointer");
         return 0;
     }
 
@@ -975,8 +977,8 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer)
             buff[buff_len++] = pkg[i];
         }
     }
-
-    memmove(buffer, buff, buff_len);
+    memset(pkg, 0, pkg_len);
+    memmove(pkg, buff, buff_len);
     free(buff);
     // mutex_lock(servo_handler.unlock);
 

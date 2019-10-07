@@ -27,18 +27,24 @@
 
 #define OPTION_UPPER_LIMIT (1)
 #define OPTION_UNDER_LIMIT (0)
-extern uint32_t servo_time;
+
+typedef enum {
+    SERVO_STATUS_ERROR = -1,
+    SERVO_STATUS_IDLE,
+    SERVO_STATUS_RUNNING,
+} servo_status_t;
 
 void servo_init(void);
-
-// time to change currennt duty to destination duty
-void servo_set_all_duty_with_time(int *duty, uint32_t time);
 
 esp_err_t robot_set_position(double x, double y, double z);
 esp_err_t robot_set_cripper_width(double width);
 esp_err_t servo_duty_set_lspb_calc(int duty, int channel);
+esp_err_t robot_set_home();
+
+servo_status_t robot_get_status();
+
 // UART
-int msg_unpack(char *pkg, int pkg_len, char *buffer);
+int msg_unpack(char *pkg, int pkg_len);
 int msg_pack(char *buff, int buff_len, char *package);
 
 // init and load data default if can't

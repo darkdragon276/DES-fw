@@ -35,7 +35,9 @@ static const char *TAG = "ROBOT";
 #define UART_CTS_PINNUM (18)     // UART_PIN_NO_CHANGE
 #define UART_NUM UART_NUM_1
 
-#define BUF_SIZE (100)
+#define BUF_SIZE (200)
+
+static char uart_buffer[BUF_SIZE] = {0};
 
 typedef enum {
     IDLE = 0,
@@ -44,25 +46,26 @@ typedef enum {
     SET_HOME,
     SET_DUTY,
     SAVE,
+    REP,
 } robot_mode_t;
+
+void robot_response(int id_command, char *message);
 
 static robot_mode_t mode = IDLE;
 robot_mode_t robot_read_command(int *id_command, char *para)
 {
-    char data[BUF_SIZE];
-    char command[10];
-    char buff[BUF_SIZE];
-    int data_len = uart_read_bytes(UART_NUM, (uint8_t *)data, BUF_SIZE, 5 / portTICK_RATE_MS);
+    int data_len = uart_read_bytes(UART_NUM, (uint8_t *)uart_buffer, BUF_SIZE, 1 / portTICK_RATE_MS);
+
     if (data_len != 0) {
-        if (buff == NULL) {
+        char command[10] = {0};
+        char buff[50] = {0};
+        memmove(buff, uart_buffer, data_len);
+        if (msg_unpack(buff, data_len) == 0) {
+            robot_response((int)(INT16_MAX), "ERROR TRANSMIT");
             return IDLE;
         }
-        msg_unpack(data, data_len, buff);
-        if (buff == NULL) {
-            ESP_LOGE(TAG, "buff input is null");
-            return;
-        }
-        sscanf(buff, "%d %s %s", id_command, command, para);
+        sscanf(buff, "%d %s %20c", id_command, command, para);
+        ESP_LOGI(TAG, "buff:%s, para:%s", uart_buffer, para);
         if (strcmp(command, "SETPOS") == 0) {
             return SET_POS;
         } else if (strcmp(command, "SETWID") == 0) {
@@ -74,13 +77,14 @@ robot_mode_t robot_read_command(int *id_command, char *para)
         } else if (strcmp(command, "SAVE") == 0) {
             return SAVE;
         } else {
-            ESP_LOGI(TAG, "error command %s", command);
+            ESP_LOGE(TAG, "error command: %s", command);
+            robot_response(*id_command, "ERROR COMMAND");
         }
     }
     return IDLE;
 }
 
-void robot_respose(int id_command, char *message)
+void robot_response(int id_command, char *message)
 {
     char *buff = (char *)calloc(BUF_SIZE, sizeof(char));
     int buff_len = snprintf(buff, BUF_SIZE, "%d:%s", id_command, message);
@@ -103,49 +107,67 @@ static void uart_task(void *pv)
     uart_set_pin(UART_NUM, UART_TXD_PINNUM, UART_RXD_PINNUM, UART_RTS_PINNUM, UART_CTS_PINNUM);
     uart_driver_install(UART_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
     int id_command = 0;
-    static char para[50];
+    char para[50];
     double x, y, z, width;
     int duty, channel;
     while (1) {
-        mode = robot_read_command(&id_command, para);
         switch (mode) {
         case IDLE:
+            memset(para, 0, sizeof(para));
+            mode = robot_read_command(&id_command, para);
             break;
         case SET_POS:
-            ESP_LOGI("debug", "line 135");
-            sscanf(para, "%lf, %lf, %lf", &x, &y, &z);
-            ESP_LOGI("debug", "line 136");
-            robot_set_position(x, y, z);
-            ESP_LOGI("debug", "line 138");
-            robot_respose(id_command, "OK");
-            mode = IDLE;
+            sscanf(para, "%lf %lf %lf", &x, &y, &z);
+            if (robot_set_position(x, y, z) == ESP_OK) {
+                robot_response(id_command, "PROCESSING");
+                mode = REP;
+            } else {
+                robot_response(id_command, "ERROR ARGUMENT");
+                mode = IDLE;
+            }
             break;
         case SET_WID:
             sscanf(para, "%lf", &width);
-            robot_set_cripper_width(width);
-            robot_respose(id_command, "OK");
-            mode = IDLE;
+            if (robot_set_cripper_width(width) == ESP_OK) {
+                robot_response(id_command, "PROCESSING");
+                mode = REP;
+            } else {
+                robot_response(id_command, "ERROR ARGUMENT");
+                mode = IDLE;
+            }
             break;
         case SET_HOME:
-            // robot_set_home();
-            robot_respose(id_command, "OK");
-            mode = IDLE;
+            robot_set_home();
+            robot_response(id_command, "PROCESSING");
+            mode = REP;
             break;
         case SET_DUTY:
-            sscanf(para, "%d, %d", &duty, &channel);
-            servo_duty_set_lspb_calc(duty, channel);
-            robot_respose(id_command, "OK");
-            mode = IDLE;
+            sscanf(para, "%d %d", &duty, &channel);
+            if (servo_duty_set_lspb_calc(duty, channel - 1) == ESP_OK) {
+                robot_response(id_command, "PROCESSING");
+                mode = REP;
+            } else {
+                robot_response(id_command, "ERROR ARGUMENT");
+                mode = IDLE;
+            }
             break;
         case SAVE:
             // robot_save();
-            robot_respose(id_command, "OK");
-            mode = IDLE;
+            robot_response(id_command, "PROCESSING");
+            mode = REP;
+            break;
+        case REP:
+            if (robot_get_status() == SERVO_STATUS_IDLE) {
+                robot_response(id_command, "DONE");
+                mode = IDLE;
+            } else if (robot_get_status() == SERVO_STATUS_ERROR) {
+                robot_response(id_command, "ERROR");
+            }
             break;
         default:
             break;
         }
-        vTaskDelay(1 / portTICK_RATE_MS);
+        vTaskDelay(10 / portTICK_RATE_MS);
     }
 }
 
