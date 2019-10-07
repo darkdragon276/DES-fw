@@ -26,6 +26,7 @@
 #include "esp_log.h"
 
 #include "servo_control.h"
+#include "esp_log.h"
 
 static const char *TAG = "ROBOT";
 
@@ -35,9 +36,10 @@ static const char *TAG = "ROBOT";
 #define UART_CTS_PINNUM (18)     // UART_PIN_NO_CHANGE
 #define UART_NUM UART_NUM_1
 
-#define BUF_SIZE (200)
+#define BUF_SIZE (1024)
 
 static char uart_buffer[BUF_SIZE] = {0};
+static int uart_buffer_idx = 0;
 
 typedef enum {
     IDLE = 0,
@@ -54,13 +56,33 @@ void robot_response(int id_command, char *message);
 static robot_mode_t mode = IDLE;
 robot_mode_t robot_read_command(int *id_command, char *para)
 {
-    int data_len = uart_read_bytes(UART_NUM, (uint8_t *)uart_buffer, BUF_SIZE, 1 / portTICK_RATE_MS);
-
+    char buff[50] = {0};
+    int data_len = uart_read_bytes(UART_NUM, (uint8_t *)buff, 50, 1 / portTICK_RATE_MS);
     if (data_len != 0) {
+        // overflow
+        if(uart_buffer_idx >= BUF_SIZE) {
+            robot_response((int)(INT16_MAX), "OVERFLOW");
+            memset(uart_buffer, 0 ,BUF_SIZE);
+            uart_buffer_idx = 0;
+        }
+        memmove(uart_buffer + uart_buffer_idx, buff, data_len);
+        uart_buffer_idx += data_len;
+    }
+    if (uart_buffer_idx > 0) {
         char command[10] = {0};
-        char buff[50] = {0};
-        memmove(buff, uart_buffer, data_len);
-        if (msg_unpack(buff, data_len) == 0) {
+        int len = 0;
+        while (uart_buffer[len] != 0x7F) {
+            len++;
+        }
+        len++;
+        memset(buff, 0, 50);
+        memmove(buff, uart_buffer, len);
+        // ESP_LOG_BUFFER_HEX("debug, uartbuffer",uart_buffer, data_len);
+        // ESP_LOG_BUFFER_HEX("debug, buff",buff, len);
+        memmove(uart_buffer, uart_buffer + len, BUF_SIZE - len);
+        uart_buffer_idx -= len;
+
+        if (msg_unpack(buff, len) == 0) {
             robot_response((int)(INT16_MAX), "ERROR TRANSMIT");
             return IDLE;
         }
@@ -167,7 +189,7 @@ static void uart_task(void *pv)
         default:
             break;
         }
-        vTaskDelay(10 / portTICK_RATE_MS);
+        vTaskDelay(20 / portTICK_RATE_MS);
     }
 }
 
