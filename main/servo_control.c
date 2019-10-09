@@ -22,7 +22,7 @@
 
 #define SERVO_MAX_CHANNEL (6)
 #define SERVO_TIME_STEP (20)     // 20 ms is timer isr step to caculate
-#define SERVO_NVS_MAGIC (0x270697)
+#define SERVO_NVS_MAGIC (0x27069700)
 #define DEFAULT_UPPER_LIMIT (2000)
 #define DEFAULT_UNDER_LIMIT (1000)
 
@@ -59,17 +59,19 @@ typedef enum {
     EVENT_NVS_SAVE,
 } event_type_t;
 
-typedef enum {
-    SERVO_STATUS_ERROR = -1,
-    SERVO_STATUS_IDLE,
-    SERVO_STATUS_RUNNING,
-} servo_status_t;
-
 /*
  *
  ****************STRUCT DECLARE*******************
  *
  */
+typedef struct {
+    double a;
+    double P0;
+    double Pf;
+    int tf;
+    int tb;
+} math_lspb_vector_t;
+
 typedef struct {
     mcpwm_unit_t unit;
     mcpwm_timer_t timer;
@@ -81,8 +83,9 @@ typedef struct {
 typedef struct {
     int duty_current;     // duty current
     int duty_target;      // duty target
-    int step;
+    math_lspb_vector_t lspb;
     servo_status_t status;
+    int time_count;
 } servo_channel_ctrl_t;
 
 typedef struct {
@@ -95,9 +98,11 @@ typedef struct {
 typedef struct {
     servo_channel_ctrl_t channel[6];
     servo_channel_calib_t duty_calib[5];
-    uint32_t time_fade;     // time_step to caculate
+    uint32_t time_full;     // time_step to caculate
+    uint32_t time_balance;
     servo_status_t status;
     int nvs_magic;
+    double cripper_len;
 } servo_handle_t;
 
 /*
@@ -118,7 +123,7 @@ xQueueHandle event_queue;
  ****************FUNCTION DECLARE*******************
  *
  */
-servo_status_t _servo_check_status(servo_handle_t *servo);
+void _servo_set_duty(servo_handle_t *servo);
 servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel);
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel);
 
@@ -130,7 +135,7 @@ void _pwm_config_default(servo_config_t *servo_config);
 void _servo_param_set_default(servo_handle_t *servo);
 void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
 
-void _servo_set_time(uint32_t time_fade);
+void _servo_set_time(uint32_t time_full);
 esp_err_t _servo_nvs_save_all(void);
 
 // math function
@@ -150,29 +155,89 @@ bool _math_in_workspace(double d, double z, double theta, double r1, double r2, 
  *
  */
 
-void _servo_set_time(uint32_t time_fade)
+void _servo_set_time(uint32_t time_full)
 {
     const char *TAG = "file: servo_control.c , function: servo_set_time";
-    if (time_fade < 500) {
-        ESP_LOGE(TAG, "time input is short %d < 500ms", time_fade);
+    if (time_full < 500) {
+        ESP_LOGE(TAG, "time input is short %d < 500ms", time_full);
         return;
     }
-    if (time_fade > 5000) {
-        ESP_LOGE(TAG, "time input is long %d > 5000ms", time_fade);
+    if (time_full > 5000) {
+        ESP_LOGE(TAG, "time input is long %d > 5000ms", time_full);
         return;
     }
 
     mutex_lock(servo_lock);
-    servo_handler.time_fade = time_fade;
+    servo_handler.time_full = time_full;
     mutex_unlock(servo_lock);
 
-    ESP_LOGI(TAG, "servo set time: %d ms ", time_fade);
+    ESP_LOGI(TAG, "servo set time: %d ms ", time_full);
+}
+
+// function for lspb calculator => path planning
+void _math_lspb_vector_calc(int current_duty, int target_duty, int time_full, int time_balance,
+                            math_lspb_vector_t *lspb_vector)
+{
+    const char *TAG = "file: servo_control.c , function: _math_lspb_vector_calc";
+    ESP_LOGD(TAG, "path planning calculating");
+    double tf_ = (double)time_full / SERVO_TIME_STEP;
+    double tb_ = (double)time_balance / SERVO_TIME_STEP;
+    double P0_ = (double)current_duty;
+    double Pf_ = (double)target_duty;
+
+    if (tf_ <= 0 || tb_ <= 0) {
+        ESP_LOGE(TAG, "tf:%.1lf or tb:%.1lf input is under zero", tf_, tb_);
+        return;
+    }
+    if (tf_ < tb_) {
+        ESP_LOGE(TAG, "tf:%.1lf must be > tb:%.1lf", tf_, tb_);
+    }
+
+    // V <= 2 (pf - p0)/tf and V >= (pf - p0)/tf => chon 1.5
+    lspb_vector->a = (Pf_ - P0_) / (tb_ * (tf_ - tb_));
+    lspb_vector->P0 = P0_;
+    lspb_vector->Pf = Pf_;
+    lspb_vector->tf = (int)tf_;
+    lspb_vector->tb = (int)tb_;
+    ESP_LOGD(TAG, "a: %.1lf, P0: %.0lf, Pf: %.0lf, tf: %d, tb: %d", lspb_vector->a, lspb_vector->P0, lspb_vector->Pf,
+             lspb_vector->tf, lspb_vector->tb);
+}
+
+// function path_planning
+int _math_path_planning(double a, double P0, double Pf, int *time_count, int tf, int tb)
+{
+    const char *TAG = "file: servo_control.c , function: _math_path_planning";
+    ESP_LOGD(TAG, "path planning caculate");
+    if (a == 0) {
+        ESP_LOGW(TAG, "warning input: a = %.2lf", a);
+        return (int)P0;     // stop
+    }
+
+    double temp = 0;
+    double T = (double)(*time_count);
+    if (T < 0) {
+        ESP_LOGE(TAG, "error T %.0lf", T);
+        return (int)P0;     // stop
+    } else if (T <= tb) {
+        temp = P0 + 0.5 * a * T * T;
+        ESP_LOGD(TAG, "velocity up");
+    } else if (T <= (tf - tb)) {
+        temp = P0 + 0.5 * a * (double)tb * (double)tb + a * (double)tb * (T - tb);
+        ESP_LOGD(TAG, "velocity balance");
+    } else if (T <= tf) {
+        temp = Pf - 0.5 * a * (T - (double)tf) * (T - (double)tf);
+        ESP_LOGD(TAG, "velocity down");
+    } else if (T > tf) {
+        return (int)Pf;
+    }
+    (*time_count)++;
+    return (int)temp;
 }
 
 // function set duty for a channel with non-locking
-esp_err_t servo_set_duty_and_step(int duty, int channel)
+esp_err_t servo_duty_set_lspb_calc(int duty, int channel)
 {
-    const char *TAG = "file: servo_control.c , function: servo_set_duty_and_step";
+    const char *TAG = "file: servo_control.c , function: servo_duty_set_lspb_calc";
     if (duty < SERVO_MIN_PULSEWIDTH) {
         ESP_LOGE(TAG, "duty input is short %d < 500us", duty);
         return ESP_ERR_INVALID_ARG;
@@ -181,17 +246,17 @@ esp_err_t servo_set_duty_and_step(int duty, int channel)
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (channel < 0 && channel > SERVO_MAX_CHANNEL) {
+    if (channel < 0 || channel > SERVO_MAX_CHANNEL) {
         ESP_LOGE(TAG, "channel %d is not available", channel);
         return ESP_ERR_INVALID_ARG;
     }
     servo_handler.channel[channel].duty_target = duty;
     ESP_LOGI(TAG, "servo %d set duty: %d us ", channel, duty);
 
-    servo_handler.channel[channel].step =
-        (int)(servo_handler.channel[channel].duty_target - servo_handler.channel[channel].duty_current) /
-        (int)(servo_handler.time_fade / SERVO_TIME_STEP);
-    ESP_LOGI(TAG, "step %d is : %d", channel, servo_handler.channel[channel].step);
+    // step calculation
+    _math_lspb_vector_calc(servo_handler.channel[channel].duty_current, duty, servo_handler.time_full,
+                           servo_handler.time_balance, &servo_handler.channel[channel].lspb);
+    servo_handler.channel[channel].time_count = 0;
     return ESP_OK;
 }
 /*
@@ -199,7 +264,6 @@ esp_err_t servo_set_duty_and_step(int duty, int channel)
  ********************************************SERVO STATUS CHECK*****************************************
  *
  */
-
 servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
 {
     const char *TAG = "file: servo_control.c , function: _servo_channel_check_status";
@@ -209,34 +273,55 @@ servo_status_t _servo_channel_check_status(servo_channel_ctrl_t *servo_channel)
         return SERVO_STATUS_ERROR;
     }
     int sub_duty = abs(servo_channel->duty_current - servo_channel->duty_target);
-    int step = abs(servo_channel->step);
-    ESP_LOGD(TAG, "sub duty: %d , step: %d", sub_duty, step);
-    if (sub_duty < step || step == 0) {
+    if (sub_duty == 0) {
         servo_channel->status = SERVO_STATUS_IDLE;
-        servo_channel->duty_current = servo_channel->duty_target;
-        servo_channel->step = 0;
         ESP_LOGD(TAG, "CHANNEL SERVO IS IDLE");
         return SERVO_STATUS_IDLE;
     }
     return SERVO_STATUS_RUNNING;
 }
 
-servo_status_t _servo_check_status(servo_handle_t *servo)
+void _servo_set_duty(servo_handle_t *servo)
 {
+    const char *TAG = "file: servo_control.c , function: _servo_set_duty";
+    servo_status_t channel_status;
+    int status = 0;
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-        if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_IDLE) {
-            continue;
-        } else if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_RUNNING) {
+        channel_status = _servo_channel_check_status(&servo->channel[i]);
+        if (channel_status == SERVO_STATUS_IDLE) {
+        } else if (channel_status == SERVO_STATUS_RUNNING) {
+            int temp = _math_path_planning(servo->channel[i].lspb.a, servo->channel[i].lspb.P0,
+                                           servo->channel[i].lspb.Pf, &servo->channel[i].time_count,
+                                           servo->channel[i].lspb.tf, servo->channel[i].lspb.tb);
+            if (i == 2) {
+                ESP_LOGD(TAG, "step: %d", temp - servo->channel[i].duty_current);
+                ESP_LOGD(TAG, "time_count: %d", servo->channel[i].time_count);
+            }
+            servo->channel[i].duty_current = temp;
+
+            if (servo->channel[i].duty_current < SERVO_MIN_PULSEWIDTH) {
+                servo->channel[i].duty_current = SERVO_MIN_PULSEWIDTH;
+            }
+            if (servo->channel[i].duty_current > SERVO_MAX_PULSEWIDTH) {
+                servo->channel[i].duty_current = SERVO_MAX_PULSEWIDTH;
+            }
             servo->status = SERVO_STATUS_RUNNING;
-            return SERVO_STATUS_RUNNING;
+            status++;
         } else {
             servo->status = SERVO_STATUS_ERROR;
-            return SERVO_STATUS_ERROR;
+            ESP_LOGE(TAG, "servo status ERROR");
+            return;
         }
     }
-    servo->status = SERVO_STATUS_IDLE;
-    return SERVO_STATUS_IDLE;
+
+    if (status > 0) {
+        servo->status = SERVO_STATUS_RUNNING;
+    } else {
+        servo->status = SERVO_STATUS_IDLE;
+    }
 }
+
+servo_status_t robot_get_status() { return servo_handler.status; }
 
 void _servo_channel_check_duty_error(servo_channel_ctrl_t *servo_channel)
 {
@@ -277,22 +362,6 @@ void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config)
              servo->channel[2].duty_current, servo->channel[3].duty_current, servo->channel[4].duty_current);
     ESP_LOGD(TAG, "%d     %d     %d     %d     %d", servo->channel[0].duty_target, servo->channel[1].duty_target,
              servo->channel[2].duty_target, servo->channel[3].duty_target, servo->channel[4].duty_target);
-}
-
-// add step per cycle
-void _servo_duty_add_step(servo_handle_t *servo)
-{
-    for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-        if (_servo_channel_check_status(&servo->channel[i]) == SERVO_STATUS_RUNNING) {
-            servo->channel[i].duty_current += servo->channel[i].step;
-            if (servo->channel[i].duty_current < SERVO_MIN_PULSEWIDTH) {
-                servo->channel[i].duty_current = SERVO_MIN_PULSEWIDTH;
-            }
-            if (servo->channel[i].duty_current > SERVO_MAX_PULSEWIDTH) {
-                servo->channel[i].duty_current = SERVO_MAX_PULSEWIDTH;
-            }
-        }
-    }
 }
 
 /*
@@ -401,24 +470,32 @@ void _pwm_config_default(servo_config_t *servo_config)
 void _servo_param_set_default(servo_handle_t *servo)
 {
     memset(servo, 0, sizeof(servo_handle_t));
-    int home[6] = {1500, 1000, 2000, 2000, 1500, 1500};
-
+    int home[6] = {1500, 1050, 1980, 2100, 1500, 1500};
+    int upper[5] = {1970, 2100, 1980, 2100, 2000};
+    int under[5] = {920, 1050, 870, 980, 1000};
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         servo->channel[i].duty_current = home[i];
         servo->channel[i].duty_target = home[i];
         servo->channel[i].status = SERVO_STATUS_IDLE;
-        servo->channel[i].step = 0;
+        servo->channel[i].lspb.a = 0;
+        servo->channel[i].lspb.P0 = 0;
+        servo->channel[i].lspb.Pf = 0;
+        servo->channel[i].lspb.tb = 0;
+        servo->channel[i].lspb.tf = 0;
+        servo->channel[i].time_count = 0;
     }
     // non cripper
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
         servo->duty_calib[i].scale = 1;
         servo->duty_calib[i].bias = 0;
-        servo->duty_calib[i].under_limit = 1000;
-        servo->duty_calib[i].upper_limit = 2000;
+        servo->duty_calib[i].under_limit = under[i];
+        servo->duty_calib[i].upper_limit = upper[i];
     }
     servo->status = SERVO_STATUS_IDLE;
-    servo->time_fade = 5000;     // 1000 ms
+    servo->time_full = 2000;       // ms
+    servo->time_balance = 800;     // ms
     servo->nvs_magic = SERVO_NVS_MAGIC;
+    servo->cripper_len = 0;
 }
 /*
  *
@@ -429,6 +506,13 @@ static void _servo_run_task(void *arg)
 {
     const char *TAG = "file: servo_control.c , function: _SERVO_RUN_TASK";
     ESP_LOGI(TAG, "servo_run_task start ...");
+    // check duty
+    for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
+        if (servo_handler.channel[i].duty_current != servo_handler.channel[i].duty_target) {
+            _servo_param_set_default(&servo_handler);
+            break;
+        }
+    }
     while (1) {
         event_type_t event_handler;
         if (xQueueReceive(event_queue, &event_handler, portMAX_DELAY)) {
@@ -438,13 +522,11 @@ static void _servo_run_task(void *arg)
                 for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
                     _servo_channel_check_duty_error(&servo_handler.channel[i]);
                 }
-                if (_servo_check_status(&servo_handler) == SERVO_STATUS_RUNNING) {
-                    _servo_duty_add_step(&servo_handler);
-                }
+                _servo_set_duty(&servo_handler);
                 _servo_mcpwm_out(&servo_handler, servo_config_pv);
                 mutex_unlock(servo_lock);
             } else if (event_handler == EVENT_NVS_SAVE) {
-                _servo_nvs_save_all();
+                // _servo_nvs_save_all();
             }
         }
         vTaskDelay(1 / portTICK_RATE_MS);
@@ -482,7 +564,8 @@ void servo_init(void)
     event_queue = xQueueCreate(20, sizeof(event_type_t));
     servo_lock = mutex_create();
     servo_nvs_load();
-    xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 4096, NULL, 5, NULL);
+    // _servo_param_set_default(&servo_handler);
+    xTaskCreate(_servo_run_task, "_SERVO_RUN_TASK", 8 * 1024, NULL, 5, NULL);
 }
 
 /*
@@ -572,7 +655,9 @@ esp_err_t robot_set_position(double x, double y, double z)
     ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
     mutex_lock(servo_lock);
     double theta[5];
-    double a2 = 10.5, a3 = 9.8, a4 = 20.0;
+    double a2 = 10.5, a3 = 9.8;
+    double a4 = 20.0 - servo_handler.cripper_len;
+    servo_handler.cripper_len = 0;
     double d = sqrt(x * x + y * y);     // z = 0;
 
     theta[0] = atan2d(y, x);     // + atan2d(d, r);
@@ -581,6 +666,7 @@ esp_err_t robot_set_position(double x, double y, double z)
         theta[1]--;
         if (theta[1] == 0) {
             ESP_LOGE(TAG, "position is out of workspace");
+            mutex_unlock(servo_lock);
             return ESP_ERR_INVALID_ARG;
         }
     }
@@ -600,14 +686,14 @@ esp_err_t robot_set_position(double x, double y, double z)
     theta[4] = 45;
 
     // convert arguments
-    ESP_LOGI(TAG, "caculate:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGD(TAG, "caculate:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
     theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
     theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
     theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
     theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
     theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
-    ESP_LOGI(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
 
     // convert to duty
@@ -615,15 +701,25 @@ esp_err_t robot_set_position(double x, double y, double z)
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
         duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
     }
-    ESP_LOGI(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+    ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
              duty[1], duty[2], duty[3], duty[4]);
 
     // set duty to run servo
     // i = SERVO_CHANNEL_[I]
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
-        servo_set_duty_and_step(duty[i], i);
+        servo_duty_set_lspb_calc(duty[i], i);
     }
+    // set time to zero
     mutex_unlock(servo_lock);
+    return ESP_OK;
+}
+
+esp_err_t robot_set_home()
+{
+    int home[5] = {1500, 1050, 1980, 2100, 1500};
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        servo_duty_set_lspb_calc(home[i], i);
+    }
     return ESP_OK;
 }
 
@@ -663,6 +759,52 @@ int _width2duty(double width)
     } else if (width > 5.5) {
         duty = (int)1200;
     }
+    /** LENGTH SUBTRACT (cm)    0.0    0.3    0.9    1.4    1.7    2.0    2.2
+     *-----------------------------------------------------------------------
+     * WIDE  (cm)               2.0    3.2    4.0    4.8    5.2    5.5    6.0
+     */
+    double len_submax = 0, len_submin = 0, wide_max = 6.0, wide_min = 2.0;
+    if (width >= 2 && width <= 3.2) {
+
+        len_submin = 0.0;
+        len_submax = 0.3;
+        wide_min = 2.0;
+        wide_max = 3.2;
+    } else if (width > 3.2 && width <= 4.0) {
+
+        len_submin = 0.3;
+        len_submax = 0.9;
+        wide_min = 3.2;
+        wide_max = 4.0;
+    } else if (width > 4.0 && width <= 4.8) {
+
+        len_submin = 0.9;
+        len_submax = 1.4;
+        wide_min = 4.0;
+        wide_max = 4.8;
+    } else if (width > 4.8 && width <= 5.2) {
+
+        len_submin = 1.4;
+        len_submax = 1.7;
+        wide_min = 4.8;
+        wide_max = 5.2;
+    } else if (width > 5.2 && width <= 5.5) {
+
+        len_submin = 1.7;
+        len_submax = 2.0;
+        wide_min = 5.2;
+        wide_max = 5.5;
+    } else if (width > 5.5 && width <= 6) {
+
+        len_submin = 2.0;
+        len_submax = 2.2;
+        wide_min = 5.5;
+        wide_max = 6.0;
+    }
+    servo_handler.cripper_len = len_submin + (width - wide_min) * (len_submax - len_submin) / (wide_max - wide_min);
+    if (servo_handler.cripper_len < 0 || servo_handler.cripper_len > 2.2) {
+        ESP_LOGE("TAG", "cripper sub len is out of range %0.2lf", servo_handler.cripper_len);
+    }
     return duty;
 }
 
@@ -675,7 +817,7 @@ esp_err_t robot_set_cripper_width(double width)
         return ESP_ERR_INVALID_ARG;
     }
     mutex_lock(servo_lock);
-    servo_set_duty_and_step(duty, SERVO_CHANNEL_5);
+    servo_duty_set_lspb_calc(duty, SERVO_CHANNEL_5);
     ESP_LOGI(TAG, "width set: %.1lf", width);
     mutex_unlock(servo_lock);
     return ESP_OK;
@@ -726,7 +868,7 @@ esp_err_t servo_nvs_load(void)
     }
 
     if (servo_handler.nvs_magic != SERVO_NVS_MAGIC) {
-        ESP_LOGW(TAG, "magic = %d", servo_handler.nvs_magic);
+        ESP_LOGW(TAG, "magic = %x", servo_handler.nvs_magic);
         _servo_param_set_default(&servo_handler);
         return esp_storage_save(storage_handle, SERVO_NVS);
     }
@@ -764,6 +906,13 @@ esp_err_t servo_nvs_save(bool option, int channel)
         esp_storage_save(storage_handle, SERVO_NVS);
         ESP_LOGI(TAG, "saved ok");
     }
+    return ESP_OK;
+}
+
+esp_err_t servo_nvs_default(void)
+{
+    _servo_param_set_default(&servo_handler);
+    _servo_nvs_save_all();
     return ESP_OK;
 }
 
@@ -833,7 +982,7 @@ int msg_pack(char *buff, int buff_len, char *package)
     }
     pkg[pkg_len++] = 0x7F;
 
-    memcpy(package, pkg, pkg_len);
+    memmove(package, pkg, pkg_len);
     free(pkg);
     // mutex_unlock(servo_lock);
 
@@ -842,16 +991,12 @@ int msg_pack(char *buff, int buff_len, char *package)
 
 // this function unpack your package to buffer lead by buff pointer
 // this function can't check pkg_len vs sizeof(pkg)
-int msg_unpack(char *pkg, int pkg_len, char *buffer)
+int msg_unpack(char *pkg, int pkg_len)
 {
     const char *TAG = "file: servo_control.c , function: msg_unpack";
     // check lenght
     if (pkg_len < MSG_MIN_PKG_LEN) {
         ESP_LOGE(TAG, "package_len: %d < %d", pkg_len, MSG_MIN_PKG_LEN);
-        return 0;
-    }
-    if (buffer == NULL) {
-        ESP_LOGE(TAG, "input buffer is null pointer");
         return 0;
     }
 
@@ -870,7 +1015,6 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer)
         }
     }
     char *buff = (char *)malloc(buff_len * sizeof(char));
-
     // unpacking
     buff_len = 0;
     for (uint32_t i = 1; i < pkg_len - 1; i++) {
@@ -883,8 +1027,8 @@ int msg_unpack(char *pkg, int pkg_len, char *buffer)
             buff[buff_len++] = pkg[i];
         }
     }
-
-    memcpy(buffer, buff, buff_len);
+    memset(pkg, 0, pkg_len);
+    memmove(pkg, buff, buff_len);
     free(buff);
     // mutex_lock(servo_handler.unlock);
 
