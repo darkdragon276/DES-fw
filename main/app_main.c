@@ -25,8 +25,8 @@
 #include "esp_err.h"
 #include "esp_log.h"
 
-#include "servo_control.h"
 #include "esp_log.h"
+#include "servo_control.h"
 
 static const char *TAG = "ROBOT";
 
@@ -60,9 +60,9 @@ robot_mode_t robot_read_command(int *id_command, char *para)
     int data_len = uart_read_bytes(UART_NUM, (uint8_t *)buff, 50, 1 / portTICK_RATE_MS);
     if (data_len != 0) {
         // overflow
-        if(uart_buffer_idx >= BUF_SIZE) {
+        if (uart_buffer_idx >= BUF_SIZE) {
             robot_response((int)(INT16_MAX), "OVERFLOW");
-            memset(uart_buffer, 0 ,BUF_SIZE);
+            memset(uart_buffer, 0, BUF_SIZE);
             uart_buffer_idx = 0;
         }
         memmove(uart_buffer + uart_buffer_idx, buff, data_len);
