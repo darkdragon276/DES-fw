@@ -655,10 +655,11 @@ esp_err_t robot_set_position(double x, double y, double z)
     ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
     mutex_lock(servo_lock);
     double theta[5];
+    double a1 = 1.5 ; // O0 to O1
     double a2 = 10.5, a3 = 9.8;
     double a4 = 20.0 - servo_handler.cripper_len;
     servo_handler.cripper_len = 0;
-    double d = sqrt(x * x + y * y);     // z = 0;
+    double d = sqrt(x * x + y * y) - a1;     // z = 0;
 
     theta[0] = atan2d(y, x);     // + atan2d(d, r);
     theta[1] = 90;
