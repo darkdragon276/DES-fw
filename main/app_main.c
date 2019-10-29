@@ -36,7 +36,7 @@ static const char *TAG = "ROBOT";
 #define UART_CTS_PINNUM (18)     // UART_PIN_NO_CHANGE
 #define UART_NUM UART_NUM_1
 
-#define BUF_SIZE (1024)
+#define BUF_SIZE (1024*2)
 
 static char uart_buffer[BUF_SIZE] = {0};
 static int uart_buffer_idx = 0;
@@ -56,7 +56,7 @@ void robot_response(int id_command, char *message);
 static robot_mode_t mode = IDLE;
 robot_mode_t robot_read_command(int *id_command, char *para)
 {
-    char buff[50] = {0};
+    char buff[100] = {0};
     int data_len = uart_read_bytes(UART_NUM, (uint8_t *)buff, 50, 1 / portTICK_RATE_MS);
     if (data_len != 0) {
         // overflow

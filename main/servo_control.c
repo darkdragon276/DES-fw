@@ -355,8 +355,15 @@ void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config)
     const char *TAG = "file: servo_control.c , function: _servo_mcpwm_out";
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         _servo_channel_check_duty_error(&servo->channel[i]);
-        ESP_ERROR_CHECK(mcpwm_set_duty_in_us(servo_config[i].unit, servo_config[i].timer, servo_config[i].op,
-                                             servo->channel[i].duty_current));
+        if(servo_config[i].unit != MCPWM_UNIT_0 ) {
+            _pwm_config_default(servo_config);
+        }
+        esp_err_t error = mcpwm_set_duty_in_us(servo_config[i].unit, servo_config[i].timer, servo_config[i].op,
+                                             servo->channel[i].duty_current);
+        if( error != ESP_OK) {
+            ESP_LOGE(TAG, "error unit: %d", servo_config[i].unit);
+            break;
+        }
     }
     ESP_LOGD(TAG, "%d     %d     %d     %d     %d", servo->channel[0].duty_current, servo->channel[1].duty_current,
              servo->channel[2].duty_current, servo->channel[3].duty_current, servo->channel[4].duty_current);
@@ -472,7 +479,7 @@ void _servo_param_set_default(servo_handle_t *servo)
     memset(servo, 0, sizeof(servo_handle_t));
     int home[6] = {1500, 1050, 1980, 2100, 1500, 1500};
     int upper[5] = {1970, 2100, 1980, 2100, 2000};
-    int under[5] = {920, 1050, 870, 980, 1000};
+    int under[5] = {950, 1050, 800, 1020, 1000};
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         servo->channel[i].duty_current = home[i];
         servo->channel[i].duty_target = home[i];
@@ -633,10 +640,10 @@ double _math_scale(double arg, double scale, double bias, double under_limit, do
 {
     double temp = arg * scale + bias;
     if (temp > upper_limit) {
-        return upper_limit;
+        return -1;
     }
     if (temp < under_limit) {
-        return under_limit;
+        return -1;
     }
     return temp;
 }
@@ -654,10 +661,12 @@ esp_err_t robot_set_position(double x, double y, double z)
     const char *TAG = "file: servo_control.c , function: robot_set_position";
     ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
     mutex_lock(servo_lock);
+    z = z - 8.7;
+        y = y + 7.94;
     double theta[5];
-    double a1 = 1.5 ; // O0 to O1
-    double a2 = 10.5, a3 = 9.8;
-    double a4 = 20.0 - servo_handler.cripper_len;
+    double a1 = 0.915 ; // O0 to O1
+    double a2 = 10.225, a3 = 9.7;
+    double a4 = 20.1 - servo_handler.cripper_len;
     servo_handler.cripper_len = 0;
     double d = sqrt(x * x + y * y) - a1;     // z = 0;
 
@@ -696,10 +705,14 @@ esp_err_t robot_set_position(double x, double y, double z)
     theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
     ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
-
     // convert to duty
     int duty[5];
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        if(theta[i] == -1) {
+            ESP_LOGE(TAG, "position is out of workspace");
+            mutex_unlock(servo_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
         duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
     }
     ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
