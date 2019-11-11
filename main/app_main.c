@@ -47,6 +47,8 @@ typedef enum {
     SET_WID,
     SET_HOME,
     SET_DUTY,
+    SET_POSnARG,
+    SET_TIME,
     SAVE,
     REP,
 } robot_mode_t;
@@ -96,6 +98,10 @@ robot_mode_t robot_read_command(int *id_command, char *para)
             return SET_HOME;
         } else if (strcmp(command, "SETDUTY") == 0) {
             return SET_DUTY;
+        } else if (strcmp(command, "SETPOSNARG") == 0) {
+            return SET_POSnARG;
+        } else if (strcmp(command, "SETTIME") == 0) {
+            return SET_TIME;
         } else if (strcmp(command, "SAVE") == 0) {
             return SAVE;
         } else {
@@ -131,7 +137,8 @@ static void uart_task(void *pv)
     int id_command = 0;
     char para[50];
     double x, y, z, width;
-    int duty, channel;
+    double angle;
+    int duty, channel, time;
     while (1) {
         switch (mode) {
         case IDLE:
@@ -166,6 +173,26 @@ static void uart_task(void *pv)
         case SET_DUTY:
             sscanf(para, "%d %d", &duty, &channel);
             if (servo_duty_set_lspb_calc(duty, channel - 1) == ESP_OK) {
+                robot_response(id_command, "PROCESSING");
+                mode = REP;
+            } else {
+                robot_response(id_command, "ERROR ARGUMENT");
+                mode = IDLE;
+            }
+            break;
+        case SET_POSnARG:
+            sscanf(para, "%lf %lf %lf %lf", &x, &y, &z, &angle);
+            if (robot_set_position_with_angle(x, y, z, angle) == ESP_OK) {
+                robot_response(id_command, "PROCESSING");
+                mode = REP;
+            } else {
+                robot_response(id_command, "ERROR ARGUMENT");
+                mode = IDLE;
+            }
+            break;
+        case SET_TIME:
+            sscanf(para, "%d", &time);
+            if (robot_set_time(time) == ESP_OK) {
                 robot_response(id_command, "PROCESSING");
                 mode = REP;
             } else {

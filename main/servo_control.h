@@ -37,7 +37,9 @@ typedef enum {
 void servo_init(void);
 
 esp_err_t robot_set_position(double x, double y, double z);
+esp_err_t robot_set_position_with_angle(double x, double y, double z, double angle);
 esp_err_t robot_set_cripper_width(double width);
+esp_err_t robot_set_time(int time_full);
 esp_err_t servo_duty_set_lspb_calc(int duty, int channel);
 esp_err_t robot_set_home();
 

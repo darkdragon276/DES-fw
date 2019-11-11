@@ -134,8 +134,6 @@ void IRAM_ATTR _timer_group0_isr(void *para);
 void _pwm_config_default(servo_config_t *servo_config);
 void _servo_param_set_default(servo_handle_t *servo);
 void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config);
-
-void _servo_set_time(uint32_t time_full);
 esp_err_t _servo_nvs_save_all(void);
 
 // math function
@@ -155,23 +153,25 @@ bool _math_in_workspace(double d, double z, double theta, double r1, double r2, 
  *
  */
 
-void _servo_set_time(uint32_t time_full)
+esp_err_t robot_set_time(int time_full)
 {
-    const char *TAG = "file: servo_control.c , function: servo_set_time";
+    const char *TAG = "file: servo_control.c , function: robot_set_time";
     if (time_full < 500) {
         ESP_LOGE(TAG, "time input is short %d < 500ms", time_full);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
     if (time_full > 5000) {
         ESP_LOGE(TAG, "time input is long %d > 5000ms", time_full);
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     mutex_lock(servo_lock);
     servo_handler.time_full = time_full;
+    servo_handler.time_balance = time_full * 30 / 100;
     mutex_unlock(servo_lock);
 
     ESP_LOGI(TAG, "servo set time: %d ms ", time_full);
+    return ESP_OK;
 }
 
 // function for lspb calculator => path planning
@@ -251,7 +251,7 @@ esp_err_t servo_duty_set_lspb_calc(int duty, int channel)
         return ESP_ERR_INVALID_ARG;
     }
     servo_handler.channel[channel].duty_target = duty;
-    ESP_LOGI(TAG, "servo %d set duty: %d us ", channel, duty);
+    ESP_LOGD(TAG, "servo %d set duty: %d us ", channel, duty);
 
     // step calculation
     _math_lspb_vector_calc(servo_handler.channel[channel].duty_current, duty, servo_handler.time_full,
@@ -355,11 +355,11 @@ void _servo_mcpwm_out(servo_handle_t *servo, servo_config_t *servo_config)
     const char *TAG = "file: servo_control.c , function: _servo_mcpwm_out";
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
         _servo_channel_check_duty_error(&servo->channel[i]);
-        if(servo_config[i].unit != MCPWM_UNIT_0 ) {
+        if(servo_config[i].unit != MCPWM_UNIT_0) {
             _pwm_config_default(servo_config);
         }
         esp_err_t error = mcpwm_set_duty_in_us(servo_config[i].unit, servo_config[i].timer, servo_config[i].op,
-                                             servo->channel[i].duty_current);
+                                               servo->channel[i].duty_current);
         if( error != ESP_OK) {
             ESP_LOGE(TAG, "error unit: %d", servo_config[i].unit);
             break;
@@ -477,7 +477,7 @@ void _pwm_config_default(servo_config_t *servo_config)
 void _servo_param_set_default(servo_handle_t *servo)
 {
     memset(servo, 0, sizeof(servo_handle_t));
-    int home[6] = {1500, 1050, 1980, 2100, 1500, 1500};
+    int home[6] = {1500, 1050, 1980, 2100, 1500, 1900};
     int upper[5] = {1970, 2100, 1980, 2100, 2000};
     int under[5] = {950, 1050, 800, 1020, 1000};
     for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
@@ -502,7 +502,7 @@ void _servo_param_set_default(servo_handle_t *servo)
     servo->time_full = 2000;       // ms
     servo->time_balance = 800;     // ms
     servo->nvs_magic = SERVO_NVS_MAGIC;
-    servo->cripper_len = 0;
+    servo->cripper_len = 5.84;
 }
 /*
  *
@@ -514,12 +514,13 @@ static void _servo_run_task(void *arg)
     const char *TAG = "file: servo_control.c , function: _SERVO_RUN_TASK";
     ESP_LOGI(TAG, "servo_run_task start ...");
     // check duty
-    for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
-        if (servo_handler.channel[i].duty_current != servo_handler.channel[i].duty_target) {
-            _servo_param_set_default(&servo_handler);
-            break;
-        }
-    }
+    _servo_param_set_default(&servo_handler);
+    // for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
+    //     if (servo_handler.channel[i].duty_current != servo_handler.channel[i].duty_target) {
+    //         _servo_param_set_default(&servo_handler);
+    //         break;
+    //     }
+    // }
     while (1) {
         event_type_t event_handler;
         if (xQueueReceive(event_queue, &event_handler, portMAX_DELAY)) {
@@ -662,12 +663,11 @@ esp_err_t robot_set_position(double x, double y, double z)
     ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
     mutex_lock(servo_lock);
     z = z - 8.7;
-        y = y + 7.94;
+    y = y + 7.94;
     double theta[5];
     double a1 = 0.915 ; // O0 to O1
     double a2 = 10.225, a3 = 9.7;
-    double a4 = 20.1 - servo_handler.cripper_len;
-    servo_handler.cripper_len = 0;
+    double a4 = 14.6 + servo_handler.cripper_len;
     double d = sqrt(x * x + y * y) - a1;     // z = 0;
 
     theta[0] = atan2d(y, x);     // + atan2d(d, r);
@@ -696,7 +696,7 @@ esp_err_t robot_set_position(double x, double y, double z)
     theta[4] = 45;
 
     // convert arguments
-    ESP_LOGD(TAG, "caculate:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+    ESP_LOGI(TAG, "theta:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
              theta[0], theta[1], theta[2], theta[3], theta[4]);
     theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
     theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
@@ -708,14 +708,90 @@ esp_err_t robot_set_position(double x, double y, double z)
     // convert to duty
     int duty[5];
     for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
-        if(theta[i] == -1) {
-            ESP_LOGE(TAG, "position is out of workspace");
+        if (theta[i] == -1) {
+            ESP_LOGE(TAG, "theta [%d] == -1", i);
             mutex_unlock(servo_lock);
             return ESP_ERR_INVALID_ARG;
         }
         duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
     }
-    ESP_LOGD(TAG, "duty after convert: duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+    ESP_LOGI(TAG, "duty : duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+             duty[1], duty[2], duty[3], duty[4]);
+
+    // set duty to run servo
+    // i = SERVO_CHANNEL_[I]
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        servo_duty_set_lspb_calc(duty[i], i);
+    }
+    // set time to zero
+    mutex_unlock(servo_lock);
+    return ESP_OK;
+}
+
+// preprocess to put x y z position and angle
+// function return pointer of xyzther3 array
+esp_err_t robot_set_position_with_angle(double x, double y, double z, double angle)
+{
+    const char *TAG = __func__;     //__func__
+    ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
+    mutex_lock(servo_lock);
+    z = z - 8.7;
+    y = y + 7.94;
+    double theta[5];
+    double a1 = 0.915;     // O0 to O1
+    double a2 = 10.225, a3 = 9.7;
+    double a4 = 14.6 + servo_handler.cripper_len;
+
+    double d = sqrt(x * x + y * y) - a1;     // z = 0;
+    theta[0] = atan2d(y, x);
+    // theta[1]
+    double z_ = z + a4;
+    double a23 = sqrt( z_*z_ + d*d );
+    if( a23 > a2 + a3) {
+        ESP_LOGE(TAG, "a23 > a2 + a3 ");
+        mutex_unlock(servo_lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    double alpha = atan2d(d, z_);
+    double phi = acosd( (a2*a2 + a23*a23 - a3*a3) / (2*a2*a23));
+    theta[1] = 90 - (alpha - phi);
+
+    // theta[2]
+    double beta = acosd( (a2*a2 + a3*a3 - a23*a23) / (2*a2*a3));
+    if( beta < 90) {
+        ESP_LOGE(TAG, "beta %lf  < 90", beta);
+        mutex_unlock(servo_lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    theta[2] = -(180.0 - beta);        // theta[2] [0:90]
+
+    // theta[3]
+    theta[3] = - (beta + phi - alpha);
+    // theta[4]
+    theta[4] = angle;
+
+    // convert arguments
+    ESP_LOGI(TAG, "theta:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
+    theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
+    theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
+    theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
+    theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
+    ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    // convert to duty
+    int duty[5];
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        if (theta[i] == -1) {
+            ESP_LOGE(TAG, "theta [%d] == -1", i);
+            mutex_unlock(servo_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
+    }
+    ESP_LOGI(TAG, "duty : duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
              duty[1], duty[2], duty[3], duty[4]);
 
     // set duty to run servo
@@ -740,7 +816,9 @@ esp_err_t robot_set_home()
 /************************************* CRIPPER WIDE WITH PULSE *********************************************
  * PULSE (us)    1900    1800    1700    1600    1500    1400    1300    1200    1100
  *------------------------------------------------------------------------------------
- * WIDE  (cm)    0,5      1,3     2,5     3,5     4,4     5,1     5,5     5,9     6
+ * WIDE  (cm)    0.97    1.41    2.40    3.65    4.39    5.00    5.43    5.84    5.96
+ *------------------------------------------------------------------------------------
+ * ADD-LENG(cm)  5.84    5.76    5.54    5.19    4.80    4.38    3.87    3.35    3.01
  */
 
 #define ROBOT_CRIPPER_MAX_WIDTH (6.0)
@@ -755,69 +833,18 @@ int _width2duty(double width)
                  ROBOT_CRIPPER_MAX_WIDTH);
         return 0;
     }
+    double duty_ref[9] = {1900, 1800, 1700, 1600, 1500, 1400, 1300, 1200, 1100};
+    double wid_ref[9] =  {0.97, 1.41, 2.40, 3.65, 4.39, 5.00, 5.43, 5.84, 5.96};
+    double len_ref[9] =  {5.84, 5.76, 5.54, 5.19, 4.80, 4.38, 3.87, 3.35, 3.01};
 
-    // parameter is caculated based y = ax + b;
-    // link google sheets:
-    // https://docs.google.com/spreadsheets/d/11esbf92rwcrUhVwUt
-    // Z1Ag2tBRmxVL04o7HjGpEqcSPc/edit#gid=0
-    double a1 = -100, b1 = 2010;
-    double a2 = -167, b2 = 2290;
     int duty = 0;
-
-    if (width < 3.0) {
-        duty = (int)1800;
-    } else if (width >= 3.0 && width <= 4.5) {
-        duty = (int)(width * a1 + b1);
-    } else if (width > 4.5 && width <= 5.5) {
-        duty = (int)(width * a2 + b2);
-    } else if (width > 5.5) {
-        duty = (int)1200;
-    }
-    /** LENGTH SUBTRACT (cm)    0.0    0.3    0.9    1.4    1.7    2.0    2.2
-     *-----------------------------------------------------------------------
-     * WIDE  (cm)               2.0    3.2    4.0    4.8    5.2    5.5    6.0
-     */
-    double len_submax = 0, len_submin = 0, wide_max = 6.0, wide_min = 2.0;
-    if (width >= 2 && width <= 3.2) {
-
-        len_submin = 0.0;
-        len_submax = 0.3;
-        wide_min = 2.0;
-        wide_max = 3.2;
-    } else if (width > 3.2 && width <= 4.0) {
-
-        len_submin = 0.3;
-        len_submax = 0.9;
-        wide_min = 3.2;
-        wide_max = 4.0;
-    } else if (width > 4.0 && width <= 4.8) {
-
-        len_submin = 0.9;
-        len_submax = 1.4;
-        wide_min = 4.0;
-        wide_max = 4.8;
-    } else if (width > 4.8 && width <= 5.2) {
-
-        len_submin = 1.4;
-        len_submax = 1.7;
-        wide_min = 4.8;
-        wide_max = 5.2;
-    } else if (width > 5.2 && width <= 5.5) {
-
-        len_submin = 1.7;
-        len_submax = 2.0;
-        wide_min = 5.2;
-        wide_max = 5.5;
-    } else if (width > 5.5 && width <= 6) {
-
-        len_submin = 2.0;
-        len_submax = 2.2;
-        wide_min = 5.5;
-        wide_max = 6.0;
-    }
-    servo_handler.cripper_len = len_submin + (width - wide_min) * (len_submax - len_submin) / (wide_max - wide_min);
-    if (servo_handler.cripper_len < 0 || servo_handler.cripper_len > 2.2) {
-        ESP_LOGE("TAG", "cripper sub len is out of range %0.2lf", servo_handler.cripper_len);
+    for(int i = 0; i < 9 - 1; i++) {
+        if(wid_ref[i] < width && width <= wid_ref[i +1]) {
+            servo_handler.cripper_len = len_ref[i] + (width - wid_ref[i])*( len_ref[i+1] - len_ref[i])
+                                        /(wid_ref[i+1] - wid_ref[i]);
+            duty = (int) (duty_ref[i] + (width - wid_ref[i])*( duty_ref[i+1] - duty_ref[i])/(wid_ref[i+1] - wid_ref[i]));
+            break;
+        }
     }
     return duty;
 }
