@@ -21,6 +21,10 @@ SETPOS X Y Z
 SETWID WIDTH
 SETHOME
 SETDUTY DUTY CHANNEL
+SETPOSNARG X Y Z ANGLE
+SETTIME TIME
+SETWIDPOS WIDTH X Y Z
+SETPOSANGWID X Y Z ANGLE WIDTH
 SAVE
 ```
 
@@ -28,6 +32,10 @@ SAVE
 
 ```
 ERROR COMMAND 	// Lệnh yêu cầu sai cấu trúc
+ERROR TRANSMIT	// Lỗi truyền nhận
+ERROR ARGUMENT	// Sai tham số truyền vào lệnh
+ERROR			// Lỗi Firmware
+OVERFLOW		// Tràn buffer lệnh, reset buffer.(quá nhiều lệnh)
 PROCESSING		// Đang xử lý lệnh
 DONE			// Thực thi xong
 ```
