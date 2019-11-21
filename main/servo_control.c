@@ -728,8 +728,6 @@ esp_err_t robot_set_position(double x, double y, double z)
     return ESP_OK;
 }
 
-// preprocess to put x y z position and angle
-// function return pointer of xyzther3 array
 esp_err_t robot_set_position_with_angle(double x, double y, double z, double angle)
 {
     const char *TAG = __func__;     //__func__
@@ -863,6 +861,166 @@ esp_err_t robot_set_cripper_width(double width)
     mutex_unlock(servo_lock);
     return ESP_OK;
 }
+
+// preprocess to put x y z position
+// function return pointer of xyzther3 array
+esp_err_t robot_set_width_position(double width, double x, double y, double z)
+{
+    const char *TAG = "file: servo_control.c , function: robot_set_width_with_position";
+    int duty[6];
+    duty[5] = _width2duty(width);
+    if (duty == 0) {
+        ESP_LOGE(TAG, "Invalid argument");
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGI(TAG, "width set: %.1lf", width);
+    // static double a = 1.0, d = 0.0, d1 = 8.7, a2 = 10.5, a3 = 10.0, d5 = 20.5;
+    ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf", x, y, z);
+    mutex_lock(servo_lock);
+    z = z - 8.7;
+    y = y + 7.94;
+    double theta[5];
+    double a1 = 0.915 ; // O0 to O1
+    double a2 = 10.225, a3 = 9.7;
+    double a4 = 14.6 + servo_handler.cripper_len;
+    double d = sqrt(x * x + y * y) - a1;     // z = 0;
+
+    theta[0] = atan2d(y, x);     // + atan2d(d, r);
+    theta[1] = 90;
+    while (_math_in_workspace(d, z, theta[1], a2, a3, a4) == false) {
+        theta[1]--;
+        if (theta[1] == 0) {
+            ESP_LOGE(TAG, "position is out of workspace");
+            mutex_unlock(servo_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    double z2 = a2 * sind(theta[1]);
+    double d2 = a2 * cosd(theta[1]);
+    double r24 = sqrt((z - z2) * (z - z2) + (d - d2) * (d - d2));
+    double c4 = (r24 * r24 - a3 * a3 - a4 * a4) / (2 * a3 * a4);
+    double s4 = sqrt(1 - c4 * c4);
+    // theta[3] < 0 => clockwise, -135 => -45
+    theta[3] = atan2d(-s4, c4);
+    // theta[2] < 0 => clockwise
+    double phi = acosd((r24 * r24 + a3 * a3 - a4 * a4) / (2 * r24 * a3));     // 0 => 180
+    double alpha = atan2d(z - z2, d - d2);                                    // -90 => 90
+    theta[2] = -(theta[1] - phi - alpha);                                     // => theta[2]: -90 => 180
+    // theta[4]
+    theta[4] = 45;
+
+    // convert arguments
+    ESP_LOGI(TAG, "theta:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
+    theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
+    theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
+    theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
+    theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
+    ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        if (theta[i] == -1) {
+            ESP_LOGE(TAG, "theta [%d] == -1", i);
+            mutex_unlock(servo_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
+    }
+    ESP_LOGI(TAG, "duty : duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+             duty[1], duty[2], duty[3], duty[4]);
+
+    // set duty to run servo
+    // i = SERVO_CHANNEL_[I]
+    for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
+        servo_duty_set_lspb_calc(duty[i], i);
+    }
+    mutex_unlock(servo_lock);
+    return ESP_OK;
+}
+
+esp_err_t robot_set_position_angle_width(double x, double y, double z, double angle, double width)
+{
+    const char *TAG = __func__;     //__func__
+    int duty[6];
+    duty[5] = _width2duty(width);
+    if (duty == 0) {
+        ESP_LOGE(TAG, "Invalid argument");
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_LOGI(TAG, "width set: %.1lf", width);
+    ESP_LOGI(TAG, "position set: x: %.2lf, y: %.2lf, z: %.2lf / angle set: %.2lf", x, y, z, angle);
+    mutex_lock(servo_lock);
+    z = z - 8.7;
+    y = y + 7.94;
+    double theta[5];
+    double a1 = 0.915;     // O0 to O1
+    double a2 = 10.225, a3 = 9.7;
+    double a4 = 14.6 + servo_handler.cripper_len;
+
+    double d = sqrt(x * x + y * y) - a1;     // z = 0;
+    theta[0] = atan2d(y, x);
+    // theta[1]
+    double z_ = z + a4;
+    double a23 = sqrt( z_*z_ + d*d );
+    if( a23 > a2 + a3) {
+        ESP_LOGE(TAG, "a23 > a2 + a3 ");
+        mutex_unlock(servo_lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    double alpha = atan2d(d, z_);
+    double phi = acosd( (a2*a2 + a23*a23 - a3*a3) / (2*a2*a23));
+    theta[1] = 90 - (alpha - phi);
+
+    // theta[2]
+    double beta = acosd( (a2*a2 + a3*a3 - a23*a23) / (2*a2*a3));
+    if( beta < 90) {
+        ESP_LOGE(TAG, "beta %lf  < 90", beta);
+        mutex_unlock(servo_lock);
+        return ESP_ERR_INVALID_ARG;
+    }
+    theta[2] = -(180.0 - beta);        // theta[2] [0:90]
+
+    // theta[3]
+    theta[3] = - (beta + phi - alpha);
+    // theta[4]
+    theta[4] = angle;
+
+    // convert arguments
+    ESP_LOGI(TAG, "theta:  theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    theta[0] = _math_scale(theta[0], 1, -45, 0, 90);     // real [1000:2000] us = [45:135] => 0: 90
+    theta[1] = _math_scale(theta[1], -1, 90, 0, 90);     // real [1000:2000] us = [90:0]   => 0: 90
+    theta[2] = _math_scale(theta[2], 1, 90, 0, 90);      // real [1000:2000] us = [-90:0]  => 0: 90
+    theta[3] = _math_scale(theta[3], 1, 135, 0, 90);     // real [1000:2000] us = [-135:-45] => 0: 90
+    theta[4] = _math_scale(theta[4], 1, 0, 0, 90);       // real [1000:2000] us = [0:90] => 0: 90
+    ESP_LOGD(TAG, "scale off: theta[0]: %.2lf, theta[1]: %.2lf, theta[2]: %.2lf, theta[3]: %.2lf, theta[4]: %.2lf",
+             theta[0], theta[1], theta[2], theta[3], theta[4]);
+    // convert to duty
+    for (int i = 0; i < SERVO_MAX_CHANNEL - 1; i++) {
+        if (theta[i] == -1) {
+            ESP_LOGE(TAG, "theta [%d] == -1", i);
+            mutex_unlock(servo_lock);
+            return ESP_ERR_INVALID_ARG;
+        }
+        duty[i] = _math_deg2duty(theta[i], servo_handler.duty_calib[i]);
+    }
+    ESP_LOGI(TAG, "duty : duty[0]: %d, duty[1]: %d, duty[2]: %d, duty[3]: %d, duty[4]: %d", duty[0],
+             duty[1], duty[2], duty[3], duty[4]);
+
+    // set duty to run servo
+    // i = SERVO_CHANNEL_[I]
+    for (int i = 0; i < SERVO_MAX_CHANNEL; i++) {
+        servo_duty_set_lspb_calc(duty[i], i);
+    }
+    // set time to zero
+    mutex_unlock(servo_lock);
+    return ESP_OK;
+}
+
 /*
  *
  **************************************** NVS FLASH LOAD AND SAVE PARAMETER ***************************************
